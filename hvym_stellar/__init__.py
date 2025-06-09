@@ -23,11 +23,11 @@ class Stellar25519KeyPair:
     def signing_key(self) -> SigningKey:
         return self._signing_key
     
-    def public_key(self) -> PublicKey:
+    def public_key_raw(self) -> PublicKey:
         return self._public
     
-    def public_key_encoded(self):
-        return base64.urlsafe_b64encode(self.public_key().encode()).decode("utf-8")
+    def public_key(self):
+        return base64.urlsafe_b64encode(self.public_key_raw().encode()).decode("utf-8")
     
     def private_key(self) -> PrivateKey:
         return self._private
@@ -92,7 +92,7 @@ class StellarSharedKeyToken:
         self._shared_encryption = StellarSharedKey(senderKeyPair, recieverPub)
         self._token = Macaroon(
             location=location,
-            identifier=base64.urlsafe_b64encode(senderKeyPair.public_key().encode()).decode("utf-8"),
+            identifier=senderKeyPair.public_key(),
             key=self._shared_encryption.hash_of_shared_secret()
         )
         if caveats != None:
@@ -110,8 +110,7 @@ class StellarSharedKeyTokenVerifier:
         self._token = Macaroon.deserialize(serializedToken)
         self._location = location
         self._verifier = Verifier()
-        self._sender_pub = self._token.identifier
-        self._shared_decryption = StellarSharedDecryption(recieverKeyPair, self._sender_pub)
+        self._shared_decryption = StellarSharedDecryption(recieverKeyPair, self._token.identifier)
         
         if caveats != None:
             for key, value in caveats.items():
