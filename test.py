@@ -5,11 +5,12 @@ from hvym_stellar import *
 sender_stellar_kp = Keypair.random()
 reciever_stellar_kp = Keypair.random()
 
-##Stellar keys must be converted to be compatible
+##Stellar keys must be converted to be compatible format for ECDH
 sender_kp = Stellar25519KeyPair(sender_stellar_kp)
 reciever_kp = Stellar25519KeyPair(reciever_stellar_kp)
 
 print('public key:')
+print(reciever_stellar_kp.public_key)
 print(reciever_kp.public_key())
 
 ##Create the encryption object
@@ -51,7 +52,7 @@ tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, loc
 
 print(tokenVerifier.valid())##>> False
 
-tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, location="WRONG LOCATION", caveats=wrong_caveats)
+tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, location="WRONG LOCATION", caveats=caveats)
 
 print(tokenVerifier.valid())##>> False
 
@@ -62,3 +63,13 @@ attacker_kp = Stellar25519KeyPair(attacker_stellar_kp)
 tokenVerifier = StellarSharedKeyTokenVerifier(attacker_kp, serialized_token, location="test", caveats=caveats)
 
 print(tokenVerifier.valid())##>> False
+
+##Create the decryption object
+sharedDecrypt = StellarSharedDecryption(attacker_kp, sender_kp.public_key())
+##Decrypt
+try:
+    txt = sharedDecrypt.decrypt(encrypted)
+    print(txt)
+except:
+    print('Cant Decrypt!!')
+
