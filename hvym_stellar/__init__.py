@@ -1,0 +1,126 @@
+"""Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
+
+__version__ = "0.01"
+
+import nacl
+from nacl import utils, secret
+from nacl.signing import SigningKey
+from nacl.public import PrivateKey, PublicKey, Box, EncryptedMessage
+from stellar_sdk import Keypair
+from pymacaroons import Macaroon, Verifier
+import hashlib
+import secrets
+import base64
+
+
+class Stellar25519KeyPair:
+    def __init__(self, keyPair : Keypair):
+        self._raw_secret = keyPair.raw_secret_key()
+        self._signing_key = SigningKey(self._raw_secret)
+        self._private = self._signing_key.to_curve25519_private_key()
+        self._public = self._signing_key.verify_key.to_curve25519_public_key()
+
+    def signing_key(self) -> SigningKey:
+        return self._signing_key
+    
+    def public_key(self) -> PublicKey:
+        return self._public
+    
+    def public_key_encoded(self):
+        return base64.urlsafe_b64encode(self.public_key().encode()).decode("utf-8")
+    
+    def private_key(self) -> PrivateKey:
+        return self._private
+
+class StellarSharedKey:
+    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : PublicKey):
+        self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
+        self._hasher = hashlib.sha256()
+        self._private = senderKeyPair.private_key()
+        self._box = Box(self._private, recieverPub)
+
+    def nonce(self) -> bytes:
+        return nacl.encoding.HexEncoder.encode(self._nonce).decode('utf-8')
+    
+    def shared_secret(self) -> bytes:
+        return self._box.shared_key()
+    
+    def shared_secret_as_hex(self) -> str:
+        return nacl.encoding.HexEncoder.encode(self.shared_secret()).decode('utf-8')
+    
+    def hash_of_shared_secret(self):
+        self._hasher.update(self.shared_secret())
+        return self._hasher.hexdigest()
+    
+    def encrypt(self, text : bytes) -> EncryptedMessage:
+        return self._box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
+    
+    def encrypt_as_ciphertext (self, text  : bytes) -> bytes:
+        return self.encrypt(text).ciphertext
+    
+    def encrypt_as_ciphertext_text (self, text  : bytes) -> str:
+        return self.encrypt_as_ciphertext(text).decode('utf-8')
+    
+
+class StellarSharedDecryption:
+    def __init__(self, recieverKeyPair : Stellar25519KeyPair, senderPub : PublicKey):
+        self._hasher = hashlib.sha256()
+        self._private = recieverKeyPair.private_key()
+        self._box = Box(self._private, senderPub)
+
+    def shared_secret(self) -> bytes:
+        return self._box.shared_key()
+    
+    def shared_secret_as_hex(self) -> str:
+        return nacl.encoding.HexEncoder.encode(self.shared_secret()).decode('utf-8')
+    
+    def hash_of_shared_secret(self):
+        self._hasher.update(self.shared_secret())
+        return self._hasher.hexdigest()
+    
+    def decrypt(self, text : bytes) -> bytes:
+        return self._box.decrypt(text, encoder=nacl.encoding.HexEncoder)
+    
+    def decrypt_as_text(self, text  : bytes) -> str:
+        return self.decrypt(text).decode('utf-8')
+    
+    
+class StellarSharedKeyToken:
+    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : PublicKey, location : str = 'HVYM_SHARED_TOKEN', caveats : dict = None):
+        self._shared_encryption = StellarSharedKey(senderKeyPair, recieverPub)
+        self._token = Macaroon(
+            location=location,
+            identifier=base64.urlsafe_b64encode(senderKeyPair.public_key().encode()).decode("utf-8"),
+            key=self._shared_encryption.hash_of_shared_secret()
+        )
+        if caveats != None:
+            for key, value in caveats.items():
+                self._token.add_first_party_caveat(f'{key} = {value}')
+
+    def serialize(self) -> str:
+        return self._token.serialize()
+    
+    def inspect(self) -> str:
+        return self._token.inspect()
+    
+class StellarSharedKeyTokenVerifier:
+    def __init__(self, recieverKeyPair : Stellar25519KeyPair, serializedToken: bytes,  location : str = 'HVYM_SHARED_TOKEN', caveats : dict = None):
+        self._token = Macaroon.deserialize(serializedToken)
+        self._location = location
+        self._verifier = Verifier()
+        self._sender_pub = PublicKey(base64.urlsafe_b64decode(self._token.identifier.encode("utf-8")))
+        self._shared_decryption = StellarSharedDecryption(recieverKeyPair, self._sender_pub)
+        
+        if caveats != None:
+            for key, value in caveats.items():
+                self._verifier.satisfy_exact(f'{key} = {value}')
+
+    def valid(self) -> bool:
+        result = True
+        if self._token.location != self._location:
+            result = False
+        try:
+            self._verifier.verify(self._token, self._shared_decryption.hash_of_shared_secret())
+        except:
+            result = False
+        return result
