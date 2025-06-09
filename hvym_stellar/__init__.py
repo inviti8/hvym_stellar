@@ -33,11 +33,12 @@ class Stellar25519KeyPair:
         return self._private
 
 class StellarSharedKey:
-    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : PublicKey):
+    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : str):
         self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
         self._hasher = hashlib.sha256()
         self._private = senderKeyPair.private_key()
-        self._box = Box(self._private, recieverPub)
+        self._raw_pub = raw = base64.urlsafe_b64decode(recieverPub.encode("utf-8"))
+        self._box = Box(self._private, PublicKey(self._raw_pub))
 
     def nonce(self) -> bytes:
         return nacl.encoding.HexEncoder.encode(self._nonce).decode('utf-8')
@@ -63,10 +64,11 @@ class StellarSharedKey:
     
 
 class StellarSharedDecryption:
-    def __init__(self, recieverKeyPair : Stellar25519KeyPair, senderPub : PublicKey):
+    def __init__(self, recieverKeyPair : Stellar25519KeyPair, senderPub : str):
         self._hasher = hashlib.sha256()
         self._private = recieverKeyPair.private_key()
-        self._box = Box(self._private, senderPub)
+        self._raw_pub = base64.urlsafe_b64decode(senderPub.encode("utf-8"))
+        self._box = Box(self._private, PublicKey(self._raw_pub))
 
     def shared_secret(self) -> bytes:
         return self._box.shared_key()
@@ -86,7 +88,7 @@ class StellarSharedDecryption:
     
     
 class StellarSharedKeyToken:
-    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : PublicKey, location : str = 'HVYM_SHARED_TOKEN', caveats : dict = None):
+    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : str, location : str = 'HVYM_SHARED_TOKEN', caveats : dict = None):
         self._shared_encryption = StellarSharedKey(senderKeyPair, recieverPub)
         self._token = Macaroon(
             location=location,
@@ -108,7 +110,7 @@ class StellarSharedKeyTokenVerifier:
         self._token = Macaroon.deserialize(serializedToken)
         self._location = location
         self._verifier = Verifier()
-        self._sender_pub = PublicKey(base64.urlsafe_b64decode(self._token.identifier.encode("utf-8")))
+        self._sender_pub = self._token.identifier
         self._shared_decryption = StellarSharedDecryption(recieverKeyPair, self._sender_pub)
         
         if caveats != None:

@@ -13,13 +13,13 @@ print('PUB!')
 print(reciever_kp.public_key_encoded())
 
 ##Create the encryption object
-sharedKey = StellarSharedKey(sender_kp, reciever_kp.public_key())
+sharedKey = StellarSharedKey(sender_kp, reciever_kp.public_key_encoded())
 txt = b"some text to be encrypted"
 
 encrypted = sharedKey.encrypt(txt)
 
 ##Create the decryption object
-sharedDecrypt = StellarSharedDecryption(reciever_kp, sender_kp.public_key())
+sharedDecrypt = StellarSharedDecryption(reciever_kp, sender_kp.public_key_encoded())
 ##Decrypt
 txt = sharedDecrypt.decrypt(encrypted)
 
@@ -31,7 +31,7 @@ caveats = {
 }
 
 ##create a new token and serialize it
-token = StellarSharedKeyToken(sender_kp, reciever_kp.public_key(), location="test", caveats=caveats)
+token = StellarSharedKeyToken(sender_kp, reciever_kp.public_key_encoded(), location="test", caveats=caveats)
 serialized_token = token.serialize()
 
 print(token.inspect())
