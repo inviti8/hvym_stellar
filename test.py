@@ -15,24 +15,27 @@ print(reciever_kp.public_key())
 
 ##Create the encryption object
 sharedKey = StellarSharedKey(sender_kp, reciever_kp.public_key())
-txt = b"some text to be encrypted"
+txt = sender_stellar_kp.secret.encode('utf-8')
+print('original secret:')
+print(txt)
 
 encrypted = sharedKey.encrypt(txt)
 
 ##Create the decryption object
 sharedDecrypt = StellarSharedDecryption(reciever_kp, sender_kp.public_key())
 ##Decrypt
-txt = sharedDecrypt.decrypt(encrypted)
+decrypted = sharedDecrypt.decrypt(encrypted)
 
-print(txt)
+print('decrypted secret:')
+print(decrypted)
 
 ##Token creation and verification
 caveats = {
     'test' : 'pass'
 }
 
-##create a new token and serialize it
-token = StellarSharedKeyToken(sender_kp, reciever_kp.public_key(), location="test", caveats=caveats)
+##create a new access token and serialize it
+token = StellarSharedKeyTokenBuilder(sender_kp, reciever_kp.public_key(), token_type=TokenType.ACCESS, caveats=caveats)
 serialized_token = token.serialize()
 
 print(token.inspect())
@@ -44,15 +47,15 @@ wrong_caveats = {
 }
 
 ##Create token verifier and check validity of token
-tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, location="test", caveats=caveats)
+tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, token_type=TokenType.ACCESS, caveats=caveats)
 
 print(tokenVerifier.valid())##>> True
 
-tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, location="test", caveats=wrong_caveats)
+tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, token_type=TokenType.ACCESS, caveats=wrong_caveats)
 
 print(tokenVerifier.valid())##>> False
 
-tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, location="WRONG LOCATION", caveats=caveats)
+tokenVerifier = StellarSharedKeyTokenVerifier(reciever_kp, serialized_token, token_type=TokenType.SECRET, caveats=caveats)
 
 print(tokenVerifier.valid())##>> False
 
@@ -60,7 +63,7 @@ print(tokenVerifier.valid())##>> False
 attacker_stellar_kp = Keypair.random()
 attacker_kp = Stellar25519KeyPair(attacker_stellar_kp)
 
-tokenVerifier = StellarSharedKeyTokenVerifier(attacker_kp, serialized_token, location="test", caveats=caveats)
+tokenVerifier = StellarSharedKeyTokenVerifier(attacker_kp, serialized_token, token_type=TokenType.ACCESS, caveats=caveats)
 
 print(tokenVerifier.valid())##>> False
 
@@ -72,4 +75,21 @@ try:
     print(txt)
 except:
     print('Cant Decrypt!!')
+
+##create a new secret token and serialize it
+abstract_acct_stellar_kp = Keypair.random()
+abstract_acct_kp = Stellar25519KeyPair(abstract_acct_stellar_kp)
+token = StellarSharedKeyTokenBuilder(sender_kp, abstract_acct_kp.public_key(), token_type=TokenType.SECRET, caveats=caveats, secret=abstract_acct_stellar_kp.secret)
+serialized_token = token.serialize()
+
+print(token.inspect())
+print(serialized_token)
+
+##Create token verifier and check validity of token and retrieve it's secret
+tokenVerifier = StellarSharedKeyTokenVerifier(abstract_acct_kp, serialized_token, token_type=TokenType.SECRET, caveats=caveats)
+
+print(tokenVerifier.valid())##>> True
+print('Do secrets match?:')
+print(abstract_acct_stellar_kp.secret)
+print(tokenVerifier.secret())
 
