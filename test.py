@@ -20,6 +20,8 @@ print('original secret:')
 print(txt)
 
 encrypted = sharedKey.encrypt(txt)
+print('encrypted:')
+print(encrypted.decode('utf-8'))
 
 ##Create the decryption object
 sharedDecrypt = StellarSharedDecryption(reciever_kp, sender_kp.public_key())
