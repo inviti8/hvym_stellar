@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.07"
+__version__ = "0.08"
 
 import nacl
 from nacl import utils, secret
@@ -55,9 +55,9 @@ class StellarSharedKey:
         return nacl.encoding.HexEncoder.encode(self.shared_secret()).decode('utf-8')
     
     def hash_of_shared_secret(self):
-        self._hasher = hashlib.sha256()
-        self._hasher.update(self.shared_secret())
-        return self._hasher.hexdigest()
+        hasher = hashlib.sha256()
+        hasher.update(self.shared_secret())
+        return hasher.hexdigest()
     
     def encrypt(self, text : bytes) -> EncryptedMessage:
         return self._box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
@@ -83,9 +83,9 @@ class StellarSharedDecryption:
         return nacl.encoding.HexEncoder.encode(self.shared_secret()).decode('utf-8')
     
     def hash_of_shared_secret(self):
-        self._hasher = hashlib.sha256()
-        self._hasher.update(self.shared_secret())
-        return self._hasher.hexdigest()
+        hasher = hashlib.sha256()
+        hasher.update(self.shared_secret())
+        return hasher.hexdigest()
     
     def decrypt(self, text : bytes) -> bytes:
         return self._box.decrypt(text, encoder=nacl.encoding.HexEncoder)
