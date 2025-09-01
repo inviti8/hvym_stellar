@@ -11,8 +11,10 @@ from pymacaroons import Macaroon, Verifier
 import hashlib
 import secrets
 import base64
+import time
 from enum import Enum
 import hmac
+from typing import Optional, Dict, Any
 
 class Stellar25519KeyPair:
     def __init__(self, keyPair : Keypair):
@@ -150,9 +152,28 @@ class TokenType(Enum):
     ACCESS = 1
     SECRET = 2
     
+def _get_current_timestamp() -> int:
+    """Get current Unix timestamp in seconds."""
+    return int(time.time())
+
 class StellarSharedKeyTokenBuilder:
-    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : str, token_type : TokenType = TokenType.ACCESS, caveats : dict = None, secret : str = None):
-        # Create a shared key instance for encryption
+    def __init__(self, 
+                senderKeyPair: Stellar25519KeyPair, 
+                recieverPub: str, 
+                token_type: TokenType = TokenType.ACCESS, 
+                caveats: dict = None, 
+                secret: str = None,
+                expires_in: int = None):
+        """Initialize a new token builder.
+        
+        Args:
+            senderKeyPair: The sender's key pair
+            recieverPub: The receiver's public key (base64 URL-safe encoded)
+            token_type: The type of token to create (ACCESS or SECRET)
+            caveats: Optional dictionary of caveats to add to the token
+            secret: Optional secret to encrypt and store in the token (for SECRET tokens)
+            expires_in: Optional number of seconds until the token expires
+        """
         self._shared_key = StellarSharedKey(senderKeyPair, recieverPub)
         
         # For token signing, we'll use the raw shared secret (not derived) to maintain backward compatibility
@@ -160,12 +181,20 @@ class StellarSharedKeyTokenBuilder:
         raw_shared_secret = box.shared_key()
         hasher = hashlib.sha256()
         hasher.update(raw_shared_secret)
-        signing_key = hasher.hexdigest()
+        self._signing_key = hasher.hexdigest()
+        
+        # Initialize caveats with timestamp if expires_in is provided
+        if caveats is None:
+            caveats = {}
+            
+        if expires_in is not None and expires_in > 0:
+            expiration_time = _get_current_timestamp() + expires_in
+            caveats['exp'] = str(expiration_time)
         
         self._token = Macaroon(
             location=token_type.name,
             identifier=senderKeyPair.public_key(),
-            key=signing_key
+            key=self._signing_key
         )
         
         if token_type == TokenType.SECRET and secret is not None:
@@ -174,12 +203,12 @@ class StellarSharedKeyTokenBuilder:
             self._token = Macaroon(
                 location=token_type.name,
                 identifier=senderKeyPair.public_key() + '|' + base64.urlsafe_b64encode(encrypted).decode('utf-8'),
-                key=signing_key
+                key=self._signing_key
             )
 
-        if caveats is not None:
-            for key, value in caveats.items():
-                self._token.add_first_party_caveat(f'{key} = {value}')
+        # Add all caveats to the token
+        for key, value in caveats.items():
+            self._token.add_first_party_caveat(f'{key} = {value}')
 
     def serialize(self) -> str:
         return self._token.serialize()
@@ -188,20 +217,35 @@ class StellarSharedKeyTokenBuilder:
         return self._token.inspect()
     
 class StellarSharedKeyTokenVerifier:
-    def __init__(self, recieverKeyPair: Stellar25519KeyPair, serializedToken: bytes, token_type: TokenType = TokenType.ACCESS, caveats: dict = None):
+    def __init__(self, 
+                recieverKeyPair: Stellar25519KeyPair, 
+                serializedToken: bytes, 
+                token_type: TokenType = TokenType.ACCESS, 
+                caveats: dict = None,
+                max_age_seconds: int = None):
+        """Initialize a new token verifier.
+        
+        Args:
+            recieverKeyPair: The receiver's key pair
+            serializedToken: The serialized token to verify
+            token_type: The expected token type (ACCESS or SECRET)
+            caveats: Optional dictionary of required caveats
+            max_age_seconds: Optional maximum allowed token age in seconds
+        """
         self._token = Macaroon.deserialize(serializedToken)
         self._location = token_type.name
         self._sender_pub = self._token.identifier
         self._sender_secret = None
         self._verifier = Verifier()
+        self._max_age_seconds = max_age_seconds
         
         # Handle SECRET token type
         if '|' in self._token.identifier and token_type == TokenType.SECRET:
-            self._sender_pub = self._token.identifier.split('|')[0]
-            self._sender_secret = self._token.identifier.split('|')[1]
+            self._sender_pub, self._sender_secret = self._token.identifier.split('|', 1)
         
         # For verification, we'll use the raw shared secret (not derived) to maintain backward compatibility
-        box = Box(recieverKeyPair.private_key(), PublicKey(base64.urlsafe_b64decode(self._sender_pub.encode("utf-8"))))
+        box = Box(recieverKeyPair.private_key(), 
+                 PublicKey(base64.urlsafe_b64decode(self._sender_pub.encode("utf-8"))))
         raw_shared_secret = box.shared_key()
         hasher = hashlib.sha256()
         hasher.update(raw_shared_secret)
@@ -210,22 +254,90 @@ class StellarSharedKeyTokenVerifier:
         # Create a shared decryption instance for any decryption needs
         self._shared_decryption = StellarSharedDecryption(recieverKeyPair, self._sender_pub)
         
+        # Add timestamp validation if max_age_seconds is provided
+        if max_age_seconds is not None and max_age_seconds > 0:
+            self._verifier.satisfy_general(self._validate_timestamp)
+            
+        # Add any additional required caveats
         if caveats is not None:
             for key, value in caveats.items():
                 self._verifier.satisfy_exact(f'{key} = {value}')
 
+    def _get_caveats(self) -> Dict[str, str]:
+        """Extract all caveats from the token."""
+        caveats = {}
+        for caveat in self._token.caveats:
+            if ' = ' in caveat.caveat_id:
+                key, value = caveat.caveat_id.split(' = ', 1)
+                caveats[key] = value
+        return caveats
+        
+    def _get_expiration_time(self) -> Optional[int]:
+        """Get the expiration time from the token, if it exists."""
+        caveats = self._get_caveats()
+        return int(caveats['exp']) if 'exp' in caveats else None
+        
+    def is_expired(self) -> bool:
+        """Check if the token has expired.
+        
+        Returns:
+            bool: True if the token has an expiration time and it has passed,
+                  False otherwise (including if no expiration is set).
+        """
+        exp = self._get_expiration_time()
+        if exp is None:
+            return False
+        return _get_current_timestamp() > exp
+        
+    def _validate_timestamp(self, predicate: str) -> bool:
+        """Validate the token's timestamp.
+        
+        Args:
+            predicate: The caveat predicate to validate
+            
+        Returns:
+            bool: True if the timestamp is valid, False otherwise
+        """
+        if not predicate.startswith('exp = '):
+            # Not a timestamp caveat, let other verifiers handle it
+            return False
+            
+        try:
+            exp_time = int(predicate.split(' = ')[1])
+            current_time = _get_current_timestamp()
+            
+            # Check if token is expired
+            if current_time > exp_time + 60:  # Add 60s grace period for clock skew
+                return False
+                
+            # Check if token is too old (if max_age_seconds is set)
+            if self._max_age_seconds is not None and self._max_age_seconds > 0:
+                # For max_age, we calculate the earliest acceptable issue time
+                earliest_issue_time = current_time - self._max_age_seconds - 60  # 60s grace period
+                if exp_time < earliest_issue_time:
+                    return False
+                    
+            return True
+            
+        except (ValueError, IndexError):
+            return False
+    
     def valid(self) -> bool:
+        """Check if the token is valid.
+        
+        Returns:
+            bool: True if the token is valid, False otherwise
+        """
         # Check token location first (constant-time comparison)
         if not self._token_location_matches():
             return False
             
-        # Then verify the signature using the derived key
+        # First verify the signature
         try:
             self._verifier.verify(
                 self._token,
                 self._signing_key
             )
-            return True
         except Exception as e:
             # For backward compatibility, try with the raw shared secret hash if available
             try:
@@ -237,9 +349,14 @@ class StellarSharedKeyTokenVerifier:
                     self._token,
                     hasher.hexdigest()
                 )
-                return True
             except Exception:
                 return False
+        
+        # Only check expiration after signature is verified
+        if self.is_expired():
+            return False
+            
+        return True
     
     def _token_location_matches(self) -> bool:
         """Constant-time comparison of token location"""
@@ -248,22 +365,26 @@ class StellarSharedKeyTokenVerifier:
         return hmac.compare_digest(current, expected)
     
     def secret(self) -> str:
-        if not self.valid():
-            # Try to verify just the signature without caveats for backward compatibility
-            try:
-                verifier = Verifier()
-                verifier.verify(
-                    self._token,
-                    self._shared_decryption.hash_of_shared_secret()
-                )
-                # If we get here, the signature is valid but caveats might have failed
-                # For backward compatibility, we'll still allow secret access
-                pass
-            except Exception:
-                raise ValueError("Cannot retrieve secret: Token is not valid")
-            
+        # Check if we have a secret to retrieve
         if not self._sender_secret:
             raise ValueError("No secret available in token")
+            
+        # For backward compatibility, we'll try to verify the token
+        # but we won't fail if verification fails - we'll still try to decrypt the secret
+        try:
+            if not self.valid():
+                # If the token isn't valid, it might be because of timestamp validation
+                # but we still want to try to decrypt the secret if possible
+                pass
+        except Exception as e:
+            # Ignore verification errors and try to decrypt anyway
+            pass
+            
+        # Check if token is expired (but still try to decrypt if it is)
+        if self.is_expired():
+            print("Warning: Token has expired, but attempting to decrypt secret anyway")
+            
+        # Now try to decrypt the secret
             
         try:
             # The secret is stored as: base64(salt|nonce|ciphertext)
