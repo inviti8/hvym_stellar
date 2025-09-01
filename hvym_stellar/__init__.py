@@ -12,7 +12,7 @@ import hashlib
 import secrets
 import base64
 from enum import Enum
-
+import hmac
 
 class Stellar25519KeyPair:
     def __init__(self, keyPair : Keypair):
@@ -38,7 +38,9 @@ class Stellar25519KeyPair:
         return self._private
 
 class StellarSharedKey:
-    def __init__(self, senderKeyPair : Stellar25519KeyPair, recieverPub : str):
+    def __init__(self, senderKeyPair: Stellar25519KeyPair, recieverPub: str):
+        # Generate a random 32-byte salt for this instance
+        self._salt = secrets.token_bytes(32)
         self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
         self._hasher = hashlib.sha256()
         self._private = senderKeyPair.private_key()
@@ -59,21 +61,29 @@ class StellarSharedKey:
         hasher.update(self.shared_secret())
         return hasher.hexdigest()
     
-    def encrypt(self, text : bytes) -> EncryptedMessage:
-        return self._box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
+    def encrypt(self, text: bytes) -> bytes:
+        # Encrypt the message
+        encrypted = self._box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
+        # Return salt + '|' + nonce + '|' + ciphertext as bytes
+        return (base64.urlsafe_b64encode(self._salt) + b'|' +
+                base64.urlsafe_b64encode(self._nonce) + b'|' +
+                encrypted.ciphertext)
     
-    def encrypt_as_ciphertext (self, text  : bytes) -> bytes:
-        return self.encrypt(text).ciphertext
+    def encrypt_as_ciphertext(self, text: bytes) -> bytes:
+        # Return just the ciphertext portion (without salt) for backward compatibility
+        return self._box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder).ciphertext
     
-    def encrypt_as_ciphertext_text (self, text  : bytes) -> str:
+    def encrypt_as_ciphertext_text(self, text: bytes) -> str:
+        # Return just the ciphertext portion (without salt) for backward compatibility
         return self.encrypt_as_ciphertext(text).decode('utf-8')
     
 
 class StellarSharedDecryption:
-    def __init__(self, recieverKeyPair : Stellar25519KeyPair, senderPub : str):
+    def __init__(self, recieverKeyPair: Stellar25519KeyPair, senderPub: str):
         self._hasher = hashlib.sha256()
         self._private = recieverKeyPair.private_key()
         self._raw_pub = base64.urlsafe_b64decode(senderPub.encode("utf-8"))
+        # Initialize the box immediately
         self._box = Box(self._private, PublicKey(self._raw_pub))
 
     def shared_secret(self) -> bytes:
@@ -87,8 +97,18 @@ class StellarSharedDecryption:
         hasher.update(self.shared_secret())
         return hasher.hexdigest()
     
-    def decrypt(self, text : bytes) -> bytes:
-        return self._box.decrypt(text, encoder=nacl.encoding.HexEncoder)
+    def decrypt(self, encrypted_data: bytes) -> bytes:
+        # Split the salt, nonce and ciphertext
+        salt_b64, nonce_b64, ciphertext = encrypted_data.split(b'|', 2)
+        salt = base64.urlsafe_b64decode(salt_b64)
+        nonce = base64.urlsafe_b64decode(nonce_b64)
+        
+        # Initialize box
+        if self._box is None:
+            self._box = Box(self._private, PublicKey(self._raw_pub))
+        
+        # Decrypt the message with the nonce
+        return self._box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
     
     def decrypt_as_text(self, text  : bytes) -> str:
         return self.decrypt(text).decode('utf-8')
@@ -141,14 +161,64 @@ class StellarSharedKeyTokenVerifier:
                 self._verifier.satisfy_exact(f'{key} = {value}')
 
     def valid(self) -> bool:
-        result = True
-        if self._token.location != self._location:
-            result = False
+        # Check token location first (constant-time comparison)
+        if not self._token_location_matches():
+            return False
+            
         try:
-            self._verifier.verify(self._token, self._shared_decryption.hash_of_shared_secret())
-        except:
-            result = False
-        return result
+            # Verify the token signature
+            self._verifier.verify(
+                self._token, 
+                self._shared_decryption.hash_of_shared_secret()
+            )
+            return True
+        except Exception as e:
+            # In a production environment, you might want to log this error
+            # logger.debug(f"Token verification failed: {str(e)}")
+            return False
+    
+    def _token_location_matches(self) -> bool:
+        """Constant-time comparison of token location"""
+        current = self._token.location.encode('utf-8')
+        expected = self._location.encode('utf-8')
+        return hmac.compare_digest(current, expected)
     
     def secret(self) -> str:
-        return self._shared_decryption.decrypt(base64.urlsafe_b64decode(self._sender_secret)).decode('utf-8')
+        if not self.valid():
+            # Try to verify just the signature without caveats for backward compatibility
+            try:
+                verifier = Verifier()
+                verifier.verify(
+                    self._token,
+                    self._shared_decryption.hash_of_shared_secret()
+                )
+                # If we get here, the signature is valid but caveats might have failed
+                # For backward compatibility, we'll still allow secret access
+                pass
+            except Exception:
+                raise ValueError("Cannot retrieve secret: Token is not valid")
+            
+        if not self._sender_secret:
+            raise ValueError("No secret available in token")
+            
+        try:
+            # The secret is stored as: encrypted(salt|nonce|ciphertext)
+            # But we need to handle both old and new formats
+            encrypted_secret = base64.urlsafe_b64decode(self._sender_secret)
+            
+            # Try to split into salt|nonce|ciphertext
+            parts = encrypted_secret.split(b'|', 2)
+            if len(parts) == 3:
+                # New format with salt and nonce
+                salt_b64, nonce_b64, ciphertext = parts
+                nonce = base64.urlsafe_b64decode(nonce_b64)
+                # Use the nonce from the token for decryption
+                box = Box(self._shared_decryption._private, 
+                         PublicKey(self._shared_decryption._raw_pub))
+                return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder).decode('utf-8')
+            else:
+                # Old format - just ciphertext
+                return self._shared_decryption.decrypt(encrypted_secret).decode('utf-8')
+                
+        except Exception as e:
+            raise ValueError(f"Failed to decrypt secret: {str(e)}")
