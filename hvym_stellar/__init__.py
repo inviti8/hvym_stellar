@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.09"
+__version__ = "0.10"
 
 import nacl
 from nacl import utils, secret
@@ -363,6 +363,9 @@ class StellarSharedKeyTokenVerifier:
         current = self._token.location.encode('utf-8')
         expected = self._location.encode('utf-8')
         return hmac.compare_digest(current, expected)
+    
+    def sender_pub(self) -> str:
+        return self._token.inspect().split('\n')[1].replace('identifier ', '').split('|')[0].strip()
     
     def secret(self) -> str:
         # Check if we have a secret to retrieve

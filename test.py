@@ -98,12 +98,15 @@ def run_legacy_tests():
     abstract_acct_kp = Stellar25519KeyPair(abstract_acct_stellar_kp)
     token = StellarSharedKeyTokenBuilder(sender_kp, abstract_acct_kp.public_key(), token_type=TokenType.SECRET, caveats=caveats, secret=abstract_acct_stellar_kp.secret)
     serialized_token = token.serialize()
-
+    
     print(token.inspect())
     print(serialized_token)
 
     ##Create token verifier and check validity of token and retrieve it's secret
     tokenVerifier = StellarSharedKeyTokenVerifier(abstract_acct_kp, serialized_token, token_type=TokenType.SECRET, caveats=caveats)
+
+    print('Retrieve the senders public key:')
+    print(tokenVerifier.sender_pub())
 
     print(tokenVerifier.valid())##>> True
     print('Do secrets match?:')
