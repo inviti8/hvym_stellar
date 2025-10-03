@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.11"
+__version__ = "0.12"
 
 import nacl
 from nacl import utils, secret
@@ -430,6 +430,9 @@ class StellarSharedKeyTokenVerifier:
             salt_b64, nonce_b64, ciphertext = encrypted_secret.split(b'|', 2)
             salt = base64.urlsafe_b64decode(salt_b64)
             nonce = base64.urlsafe_b64decode(nonce_b64)
+            
+            # Strip any whitespace or line endings from ciphertext (Windows CRLF fix)
+            ciphertext = ciphertext.strip()
             
             # Derive the same key using the salt
             derived_key = self._shared_decryption._derive_key(salt)
