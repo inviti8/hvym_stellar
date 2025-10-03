@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.10"
+__version__ = "0.11"
 
 import nacl
 from nacl import utils, secret
@@ -129,21 +129,54 @@ class StellarSharedDecryption:
         return hashlib.sha256(combined).digest()
     
     def decrypt(self, encrypted_data: bytes) -> bytes:
-        # Split the message into components
-        salt_b64, nonce_b64, ciphertext = encrypted_data.split(b'|', 2)
-        salt = base64.urlsafe_b64decode(salt_b64)
-        nonce = base64.urlsafe_b64decode(nonce_b64)
-        
-        # Derive the same key using the salt
-        derived_key = self._derive_key(salt)
-        
-        # Create a new box with the derived key
-        private_key = PrivateKey(derived_key)
-        public_key = PublicKey(derived_key)  # Same key for both sides
-        box = Box(private_key, public_key)
-        
-        # Decrypt the message
-        return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
+        try:
+            # Ensure we're working with bytes and strip any potential whitespace/line endings
+            if isinstance(encrypted_data, str):
+                encrypted_data = encrypted_data.encode('utf-8')
+            
+            # Clean up the input by stripping whitespace and line endings
+            encrypted_data = encrypted_data.strip()
+            
+            # Split the message into components
+            parts = encrypted_data.split(b'|', 2)
+            if len(parts) != 3:
+                raise ValueError("Invalid encrypted data format: expected 3 parts separated by '|'")
+                
+            salt_b64, nonce_b64, ciphertext = parts
+            
+            # Decode base64 components
+            try:
+                salt = base64.urlsafe_b64decode(salt_b64)
+                nonce = base64.urlsafe_b64decode(nonce_b64)
+            except Exception as e:
+                raise ValueError(f"Failed to decode salt or nonce: {str(e)}")
+            
+            # Derive the same key using the salt
+            derived_key = self._derive_key(salt)
+            
+            # Create a new box with the derived key
+            private_key = PrivateKey(derived_key)
+            public_key = PublicKey(derived_key)  # Same key for both sides
+            box = Box(private_key, public_key)
+            
+            # Ensure ciphertext is in the correct format
+            if not isinstance(ciphertext, bytes):
+                ciphertext = ciphertext.encode('utf-8')
+            
+            # First try with hex encoding (original behavior)
+            try:
+                return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
+            except Exception as hex_err:
+                # If hex decoding fails, try raw bytes as a fallback
+                if "Non-hexadecimal digit found" in str(hex_err):
+                    try:
+                        return box.decrypt(ciphertext, nonce)
+                    except Exception as raw_err:
+                        raise ValueError(f"Decryption failed with both hex and raw bytes: {str(raw_err)}")
+                raise ValueError(f"Decryption failed: {str(hex_err)}")
+                
+        except Exception as e:
+            raise ValueError(f"Decryption failed: {str(e)}")
     
     def decrypt_as_text(self, text  : bytes) -> str:
         return self.decrypt(text).decode('utf-8')

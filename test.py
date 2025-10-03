@@ -213,10 +213,57 @@ def run_timestamp_tests():
     print(f"Secret matches: {verifier.secret() == secret_text}")
 
 
+def test_robust_decryption():
+    """Test the robustness of the decryption with different input types and line endings."""
+    print("\n=== Testing Robust Decryption ===")
+    
+    # Setup test keys
+    sender_stellar_kp = Keypair.random()
+    reciever_stellar_kp = Keypair.random()
+    sender_kp = Stellar25519KeyPair(sender_stellar_kp)
+    reciever_kp = Stellar25519KeyPair(reciever_stellar_kp)
+    
+    # Test data
+    test_secret = b"test_secret_data_123"
+    
+    # Create shared key and encrypt
+    shared_key = StellarSharedKey(sender_kp, reciever_kp.public_key())
+    encrypted = shared_key.encrypt(test_secret)
+    
+    # Create decryption object
+    shared_decrypt = StellarSharedDecryption(reciever_kp, sender_kp.public_key())
+    
+    # Test cases
+    test_cases = [
+        ("Normal case", encrypted),
+        ("String input", encrypted.decode('utf-8')),
+        ("With newline", encrypted + b'\n'),
+        ("With Windows newline", encrypted + b'\r\n'),
+        ("With spaces", b'   ' + encrypted + b'   '),
+    ]
+    
+    for name, test_input in test_cases:
+        print(f"\nTest: {name}")
+        try:
+            decrypted = shared_decrypt.decrypt(test_input)
+            assert decrypted == test_secret, f"Decrypted data does not match original for {name}"
+            print(f"✅ Success: {name}")
+        except Exception as e:
+            print(f"❌ Failed {name}: {str(e)}")
+            raise
+    
+    print("\nAll robust decryption tests passed!")
+
+
 if __name__ == "__main__":
     # Run legacy tests
     run_legacy_tests()
     
     # Run timestamp tests
     run_timestamp_tests()
-
+    
+    # Run robust decryption tests
+    test_robust_decryption()
+    
+    # Run the unittest test suite
+    unittest.main()
