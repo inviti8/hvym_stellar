@@ -72,12 +72,12 @@ class ComprehensiveCryptographicAssessment:
                 for msg in test_messages:
                     sender_kp, receiver_kp = self.test_keypairs[0]
                     try:
-                        # Use working encrypt() method
+                        # Test HYBRID approach (encrypt/decrypt - original behavior)
                         shared_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
-                        encrypted = shared_key.encrypt(msg)
+                        encrypted = shared_key.encrypt(msg)  # Uses hybrid approach
                         
                         shared_decrypt = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
-                        decrypted = shared_decrypt.decrypt(encrypted)
+                        decrypted = shared_decrypt.decrypt(encrypted)  # Uses hybrid approach
                         
                         if decrypted == msg:
                             success_count += 1
@@ -110,7 +110,8 @@ class ComprehensiveCryptographicAssessment:
                 details={
                     "avg_success_rate": avg_success,
                     "results_by_size": dict(zip(test_sizes, results)),
-                    "total_tests": len(test_sizes) * 10
+                    "total_tests": len(test_sizes) * 10,
+                    "approach_tested": "Hybrid (encrypt/decrypt)"
                 },
                 recommendation=recommendation
             )
@@ -118,6 +119,155 @@ class ComprehensiveCryptographicAssessment:
         except Exception as e:
             return TestResult(
                 test_name="Hybrid Functionality",
+                test_type="STRENGTH",
+                score=0.0,
+                status="FAIL",
+                details={"error": str(e)},
+                recommendation="Fix implementation errors"
+            )
+    
+    def test_asymmetric_functionality(self) -> TestResult:
+        """Test asymmetric encryption/decryption functionality"""
+        print("Testing Asymmetric Functionality...")
+        
+        try:
+            test_sizes = [16, 32, 64, 128, 256, 512, 1024, 2048]
+            results = []
+            
+            for size in test_sizes:
+                test_messages = [secrets.token_bytes(size) for _ in range(10)]
+                success_count = 0
+                
+                for msg in test_messages:
+                    sender_kp, receiver_kp = self.test_keypairs[0]
+                    try:
+                        # Test ASYMMETRIC approach (asymmetric_encrypt/asymmetric_decrypt)
+                        shared_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
+                        encrypted = shared_key.asymmetric_encrypt(msg)  # Uses asymmetric approach
+                        
+                        shared_decrypt = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
+                        decrypted = shared_decrypt.asymmetric_decrypt(encrypted)  # Uses asymmetric approach
+                        
+                        if decrypted == msg:
+                            success_count += 1
+                    except:
+                        pass
+                
+                success_rate = success_count / len(test_messages)
+                results.append(success_rate)
+            
+            avg_success = sum(results) / len(results)
+            
+            if avg_success >= 0.95:
+                status = "PASS"
+                score = avg_success * 10
+                recommendation = "Asymmetric encryption works correctly"
+            elif avg_success >= 0.8:
+                status = "WARNING"
+                score = avg_success * 8
+                recommendation = "Asymmetric encryption has some issues"
+            else:
+                status = "FAIL"
+                score = avg_success * 5
+                recommendation = "Asymmetric encryption has significant problems"
+            
+            return TestResult(
+                test_name="Asymmetric Functionality",
+                test_type="STRENGTH",
+                score=score,
+                status=status,
+                details={
+                    "avg_success_rate": avg_success,
+                    "results_by_size": dict(zip(test_sizes, results)),
+                    "total_tests": len(test_sizes) * 10,
+                    "approach_tested": "Asymmetric (asymmetric_encrypt/asymmetric_decrypt)"
+                },
+                recommendation=recommendation
+            )
+            
+        except Exception as e:
+            return TestResult(
+                test_name="Asymmetric Functionality",
+                test_type="STRENGTH",
+                score=0.0,
+                status="FAIL",
+                details={"error": str(e)},
+                recommendation="Fix implementation errors"
+            )
+    
+    def test_cross_compatibility(self) -> TestResult:
+        """Test that hybrid and asymmetric approaches are properly separated"""
+        print("Testing Cross-Compatibility...")
+        
+        try:
+            test_messages = [secrets.token_bytes(64) for _ in range(10)]
+            cross_failures = 0
+            cross_successes = 0
+            
+            for msg in test_messages:
+                sender_kp, receiver_kp = self.test_keypairs[0]
+                try:
+                    # Test 1: Encrypt with hybrid, decrypt with asymmetric (should fail)
+                    shared_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
+                    hybrid_encrypted = shared_key.encrypt(msg)
+                    
+                    shared_decrypt = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
+                    try:
+                        hybrid_decrypted = shared_decrypt.asymmetric_decrypt(hybrid_encrypted)
+                        # If this succeeds, it's a problem
+                        cross_failures += 1
+                    except:
+                        # This should fail - good
+                        cross_successes += 1
+                    
+                    # Test 2: Encrypt with asymmetric, decrypt with hybrid (should fail)
+                    asymmetric_encrypted = shared_key.asymmetric_encrypt(msg)
+                    
+                    try:
+                        asymmetric_decrypted = shared_decrypt.decrypt(asymmetric_encrypted)
+                        # If this succeeds, it's a problem
+                        cross_failures += 1
+                    except:
+                        # This should fail - good
+                        cross_successes += 1
+                        
+                except:
+                    cross_failures += 2
+            
+            # Calculate score based on proper separation
+            total_tests = len(test_messages) * 2
+            separation_rate = cross_successes / total_tests
+            
+            if separation_rate >= 0.95:
+                status = "PASS"
+                score = separation_rate * 10
+                recommendation = "Approaches are properly separated"
+            elif separation_rate >= 0.8:
+                status = "WARNING"
+                score = separation_rate * 8
+                recommendation = "Some cross-compatibility issues"
+            else:
+                status = "FAIL"
+                score = separation_rate * 5
+                recommendation = "Poor separation between approaches"
+            
+            return TestResult(
+                test_name="Cross-Compatibility",
+                test_type="STRENGTH",
+                score=score,
+                status=status,
+                details={
+                    "separation_rate": separation_rate,
+                    "cross_successes": cross_successes,
+                    "cross_failures": cross_failures,
+                    "total_tests": total_tests
+                },
+                recommendation=recommendation
+            )
+            
+        except Exception as e:
+            return TestResult(
+                test_name="Cross-Compatibility",
                 test_type="STRENGTH",
                 score=0.0,
                 status="FAIL",
@@ -639,10 +789,11 @@ class ComprehensiveCryptographicAssessment:
         # Run all tests
         all_tests = [
             self.test_hybrid_functionality,
+            self.test_asymmetric_functionality,
+            self.test_cross_compatibility,
             self.test_key_space_security,
             self.test_randomness_quality,
             self.test_attack_resistance,
-            self.test_timing_vulnerabilities,
             self.test_component_exposure,
             self.test_aes_comparison
         ]

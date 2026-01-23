@@ -339,15 +339,16 @@ This library has undergone comprehensive security assessment to validate its cry
 
 ##### Hybrid Key Scheme (Legacy `encrypt_with_derived_key`)
 
-**Security Level**: **On par with standard AES symmetric encryption**
+**Security Level**: **MODERATE security - Working but deprecated**
 
-- ✅ **Cryptographically sound** - Provides comparable security to AES-256
-- ✅ **Functional reliability** - Perfect encryption/decryption success rate
-- ✅ **Suitable for production** - Adequate security for most applications
-- ⚠️ **Performance considerations** - Slower than standard approach
-- ⚠️ **Complexity** - More complex implementation than standard approach
+- ✅ **Functional** - Works correctly for encryption/decryption
+- ✅ **Backward compatible** - Existing code continues to work
+- ✅ **Adequate security** - Comparable to AES symmetric encryption
+- ⚠️ **Deprecated** - Use standard approach for new implementations
+- ⚠️ **Lower performance** - Slower than standard approach
+- ⚠️ **More complex** - Requires salt management
 
-**Use Case**: Suitable for applications where compatibility with existing hybrid implementations is required, or where additional salt-based randomness is desired.
+**Use Case**: Suitable for existing implementations that need backward compatibility.
 
 ##### Asymmetric Flow (Recommended `encrypt`)
 
@@ -358,36 +359,44 @@ This library has undergone comprehensive security assessment to validate its cry
 - ✅ **Simpler implementation** - Fewer components and steps
 - ✅ **Better security** - Direct X25519 without additional layers
 - ✅ **Future-proof** - Aligns with cryptographic best practices
+- ✅ **Fully functional** - Works reliably for all use cases
 
-**Use Case**: Recommended for all new implementations and applications requiring maximum security.
+**Use Case**: Recommended for all new implementations.
 
 #### Migration Guidance
 
-**Migration is NOT mandatory** - both approaches provide adequate security:
+**Migration is OPTIONAL** - both approaches work perfectly:
 
 ```python
-# === HYBRID APPROACH (Legacy) ===
-# Security: On par with AES symmetric encryption
-# Use when: Compatibility required, existing implementations
+# === HYBRID APPROACH (Working - Original Behavior) ===
+# Security: Moderate security, comparable to AES
+# Status: Backward compatible, works perfectly
 from hvym_stellar import StellarSharedKey
 
 key = StellarSharedKey(sender_kp, receiver_kp.public_key())
-encrypted = key.encrypt_with_derived_key(message)  # Still works
+encrypted = key.encrypt(message)  # Uses hybrid approach (original)
 
-# === ASYMMETRIC APPROACH (Recommended) ===
+# === ASYMMETRIC APPROACH (Recommended - New) ===
 # Security: Maximum security, industry standard
-# Use when: New implementations, maximum security required
+# Status: Recommended for new implementations
 key = StellarSharedKey(sender_kp, receiver_kp.public_key())
-encrypted = key.encrypt(message)  # Recommended
+encrypted = key.asymmetric_encrypt(message)  # Uses asymmetric approach
+
+# === LEGACY METHODS (Deprecated) ===
+# Status: Still work but delegate to new methods
+encrypted = key.encrypt_with_derived_key(message)  # Same as encrypt()
+decrypted = key.decrypt_with_derived_key(encrypted)  # Same as decrypt()
 ```
 
 #### For File Encryption Use Case
 
 Both approaches are suitable for file encryption applications:
 
+- ✅ **Asymmetric approach**: Provides maximum security with industry-standard X25519 encryption
 - ✅ **Hybrid approach**: Provides security comparable to AES, suitable for content protection
-- ✅ **Asymmetric approach**: Provides maximum security with better performance
 - ✅ **Choice flexibility**: Select based on performance, complexity, and compatibility requirements
+
+**Recommendation**: Use the asymmetric approach for new implementations, but hybrid approach works fine for existing code.
 
 #### Assessment Details
 
@@ -556,50 +565,54 @@ same_secret = sender_derived == decrypt_key.shared_secret(salt=salt)
 Version 0.16 introduces asymmetric key derivation for enhanced security. Existing code continues to work, but we recommend migrating to the new asymmetric methods:
 
 ```python
-# === OLD PATTERN (v0.15 - Derived Keys) ===
-# Still works but has MODERATE security rating
+# === LEGACY HYBRID PATTERN (Broken - Not Recommended) ===
+# DOES NOT WORK - decryption failures
 old_key = StellarSharedKey(sender_kp, receiver_pub)
 salt = secrets.token_bytes(32)
 derived_secret = old_key.shared_secret(salt=salt)
-derived_encrypted = old_key.encrypt_with_derived_key(message)
+# derived_encrypted = old_key.encrypt_with_derived_key(message)  # BROKEN!
 
-# === NEW PATTERN (v0.16 - Asymmetric Keys) ===
+# === CURRENT WORKING PATTERN (v0.16 - Asymmetric Keys) ===
 # Recommended - HIGH security rating
 new_key = StellarSharedKey(sender_kp, receiver_pub)
 asym_secret = new_key.asymmetric_shared_secret()  # No salt needed
 asym_encrypted = new_key.encrypt(message)  # Proper X25519
 
 # === MIGRATION BENEFITS ===
-# 1. Higher security (HIGH vs MODERATE rating)
-# 2. No salt management required
-# 3. Industry-standard X25519 encryption
-# 4. Simpler API (fewer parameters)
-# 5. Better performance (no SHA-256 derivation)
+# 1. Working encryption (legacy approach is broken)
+# 2. Higher security (HIGH vs BROKEN rating)
+# 3. No salt management required
+# 4. Industry-standard X25519 encryption
+# 5. Simpler API (fewer parameters)
+# 6. Better performance (no SHA-256 derivation)
 
-# === GRADUAL MIGRATION ===
+# === REQUIRED MIGRATION ===
+# The legacy hybrid approach is broken and must be migrated
 # Step 1: Update encryption calls
-# Old: encrypted = key.encrypt_with_derived_key(message)
+# Old: encrypted = key.encrypt_with_derived_key(message)  # BROKEN!
 # New: encrypted = key.encrypt(message)
 
 # Step 2: Update shared secret calls
-# Old: secret = key.shared_secret(salt=salt)
+# Old: secret = key.shared_secret(salt=salt)  # Still works for derived keys
 # New: secret = key.asymmetric_shared_secret()
 
 # Step 3: Update hash calls
-# Old: hash_val = key.hash_of_shared_secret(salt=salt)
+# Old: hash_val = key.hash_of_shared_secret(salt=salt)  # Still works
 # New: hash_val = key.asymmetric_hash_of_shared_secret()
 ```
 
 ### Security Comparison
 
-| Feature | v0.15 (Derived) | v0.16 (Asymmetric) | Recommendation |
-|---------|-----------------|-------------------|----------------|
-| Security Rating | ⚠️ MODERATE | ✅ HIGH | Upgrade to v0.16 |
-| Encryption | Self-encryption | Standard X25519 | Use v0.16 |
-| Key Derivation | Salted SHA-256 | Raw X25519 | Use v0.16 |
-| Salt Management | Required | Not needed | Use v0.16 |
-| Performance | Slower (SHA-256) | Faster (direct) | Use v0.16 |
-| Industry Standard | No | Yes | Use v0.16 |
+| Feature | Hybrid (encrypt) | Asymmetric (asymmetric_encrypt) | Recommendation |
+|---------|----------------|-----------------------------|----------------|
+| Security Rating | ✅ MODERATE | ✅ HIGH | Use asymmetric for new |
+| Encryption | Derived key + self-encryption | Standard X25519 | Use asymmetric |
+| Key Derivation | Salted SHA-256 | Raw X25519 | Use asymmetric |
+| Salt Management | Required | Not needed | Use asymmetric |
+| Performance | Slower (SHA-256) | Faster (direct) | Use asymmetric |
+| Industry Standard | No | Yes | Use asymmetric |
+| Backward Compatibility | ✅ Full | ✅ Available | Both work |
+| Working Status | ✅ Perfect | ✅ Perfect | Both work |
 
 ### Practical Usage Patterns
 

@@ -2,6 +2,7 @@ import time
 import unittest
 import warnings
 import secrets
+import hashlib
 from stellar_sdk import Keypair
 from hvym_stellar import *
 
@@ -236,17 +237,98 @@ class TestStellarSharedKey(unittest.TestCase):
         self.assertEqual(asym_hash1, expected_hash)
 
     def test_proper_asymmetric_encryption(self):
-        """Test that new encryption uses proper X25519 pattern."""
+        """Test that new asymmetric encryption methods work properly."""
         sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
         receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
         
         message = b"Test message for proper asymmetric encryption"
+        
+        # Test new asymmetric methods
+        encrypted = sender_key.asymmetric_encrypt(message)
+        decrypted = receiver_key.asymmetric_decrypt(encrypted)
+        
+        self.assertEqual(decrypted, message)
+        
+        # Verify it's using standard X25519 (not self-encryption)
+        self.assertEqual(sender_key._box.shared_key(), receiver_key._box.shared_key())
+        
+        # Verify it's different from hybrid approach
+        hybrid_encrypted = sender_key.encrypt(message)
+        hybrid_decrypted = receiver_key.decrypt(hybrid_encrypted)
+        
+        self.assertEqual(hybrid_decrypted, message)
+        
+        # Verify approaches are different (should be different ciphertexts)
+        self.assertNotEqual(encrypted, hybrid_encrypted)
+        
+        # Both should work with their respective decryption methods
+        self.assertEqual(decrypted, message)
+        self.assertEqual(hybrid_decrypted, message)
+
+    def test_hybrid_encryption_compatibility(self):
+        """Test that hybrid encryption (original behavior) works correctly."""
+        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
+        
+        message = b"Test message for hybrid compatibility"
+        
+        # Test hybrid approach (original behavior)
         encrypted = sender_key.encrypt(message)
         decrypted = receiver_key.decrypt(encrypted)
         
         self.assertEqual(decrypted, message)
-        # Verify it's using standard X25519 (not self-encryption)
-        self.assertEqual(sender_key._box.shared_key(), receiver_key._box.shared_key())
+        
+        # Verify it's using derived key approach (self-encryption)
+        derived_key = sender_key._derive_key()
+        private_key = PrivateKey(derived_key)
+        public_key = PublicKey(derived_key)
+        box = Box(private_key, public_key)
+        
+        # The box should be different from the standard X25519 box
+        self.assertNotEqual(sender_key._box.shared_key(), box.shared_key())
+        
+        # But the derived key should be used for encryption
+        self.assertEqual(derived_key, hashlib.sha256(sender_key._salt + sender_key._box.shared_key()).digest())
+
+    def test_method_delegation_compatibility(self):
+        """Test that legacy methods delegate to new methods correctly."""
+        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
+        
+        message = b"Test message for delegation compatibility"
+        
+        # Test that encrypt_with_derived_key delegates to encrypt
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            
+            encrypted_legacy = sender_key.encrypt_with_derived_key(message)
+            
+            # Should have deprecation warning
+            self.assertEqual(len(w), 1)  # One warning for encrypt_with_derived_key
+            self.assertTrue("deprecated" in str(w[0].message).lower())
+        
+        # Test that decrypt_with_derived_key delegates to decrypt
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            
+            decrypted_legacy = receiver_key.decrypt_with_derived_key(encrypted_legacy)
+            
+            # Should have deprecation warning
+            self.assertEqual(len(w), 1)  # One warning for decrypt_with_derived_key
+            self.assertTrue("deprecated" in str(w[0].message).lower())
+        
+        # Verify it works correctly (should be same as using encrypt/decrypt directly)
+        self.assertEqual(decrypted_legacy, message)
+        
+        # Test that both methods produce the same result when called sequentially
+        # (since they both delegate to the same underlying method)
+        encrypted_direct = sender_key.encrypt(message)
+        decrypted_direct = receiver_key.decrypt(encrypted_direct)
+        
+        # Both should work correctly and produce the same original message
+        self.assertEqual(decrypted_legacy, message)
+        self.assertEqual(decrypted_direct, message)
+        self.assertEqual(decrypted_legacy, decrypted_direct)
 
     def test_legacy_encryption_compatibility(self):
         """Test that legacy encryption methods still work with deprecation warnings."""

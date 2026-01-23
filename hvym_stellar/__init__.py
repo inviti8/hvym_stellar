@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.16"
+__version__ = "0.17.0"
 
 import nacl
 from nacl import utils, secret
@@ -233,6 +233,34 @@ class StellarSharedKey:
     
     def encrypt(self, text: bytes) -> bytes:
         """
+        Encrypt using derived key (original behavior).
+        
+        This is the original hybrid encryption approach for backward compatibility.
+        For new implementations, consider using asymmetric_encrypt() for better security.
+        
+        Args:
+            text: Message to encrypt
+            
+        Returns:
+            bytes: Encrypted data in format salt|nonce|ciphertext
+        """
+        # Generate new random salt and nonce
+        self._salt = secrets.token_bytes(32)
+        self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
+        
+        # Use derived key (self-encryption pattern) - ORIGINAL BEHAVIOR
+        derived_key = self._derive_key()
+        private_key = PrivateKey(derived_key)
+        public_key = PublicKey(derived_key)
+        box = Box(private_key, public_key)
+        encrypted = box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
+        
+        return (base64.urlsafe_b64encode(self._salt) + b'|' +
+                base64.urlsafe_b64encode(self._nonce) + b'|' +
+                encrypted.ciphertext)
+    
+    def asymmetric_encrypt(self, text: bytes) -> bytes:
+        """
         Encrypt using standard X25519 asymmetric encryption.
         
         This is the recommended secure approach that uses proper asymmetric cryptography.
@@ -257,10 +285,10 @@ class StellarSharedKey:
     
     def encrypt_with_derived_key(self, text: bytes) -> bytes:
         """
-        Encrypt using derived key (legacy behavior).
+        Encrypt using derived key (legacy behavior - DEPRECATED).
         
-        DEPRECATED: Use encrypt() for new implementations.
-        This method exists for backward compatibility.
+        DEPRECATED: This method is deprecated. Use encrypt() for the same behavior
+        or asymmetric_encrypt() for improved security.
         
         Args:
             text: Message to encrypt
@@ -269,25 +297,13 @@ class StellarSharedKey:
             bytes: Encrypted data in format salt|nonce|ciphertext
         """
         warnings.warn(
-            "encrypt_with_derived_key() is deprecated, use encrypt() for proper asymmetric encryption",
+            "encrypt_with_derived_key() is deprecated, use encrypt() for the same behavior or asymmetric_encrypt() for improved security",
             DeprecationWarning,
             stacklevel=2
         )
         
-        # Generate new random salt and nonce
-        self._salt = secrets.token_bytes(32)
-        self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
-        
-        # Use derived key (self-encryption pattern)
-        derived_key = self._derive_key()
-        private_key = PrivateKey(derived_key)
-        public_key = PublicKey(derived_key)
-        box = Box(private_key, public_key)
-        encrypted = box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
-        
-        return (base64.urlsafe_b64encode(self._salt) + b'|' +
-                base64.urlsafe_b64encode(self._nonce) + b'|' +
-                encrypted.ciphertext)
+        # Delegate to encrypt() for the same behavior
+        return self.encrypt(text)
     
     def encrypt_as_ciphertext(self, text: bytes) -> bytes:
         # Return just the ciphertext portion (without salt) for backward compatibility
@@ -408,7 +424,52 @@ class StellarSharedDecryption:
     
     def decrypt(self, encrypted_data: bytes) -> bytes:
         """
+        Decrypt using derived key (original behavior).
+        
+        This is the original hybrid decryption approach for backward compatibility.
+        For new implementations, consider using asymmetric_decrypt() for better security.
+        
+        Args:
+            encrypted_data: Encrypted data in format salt|nonce|ciphertext
+            
+        Returns:
+            bytes: Decrypted message
+        """
+        try:
+            # Ensure we're working with bytes
+            if isinstance(encrypted_data, str):
+                encrypted_data = encrypted_data.encode('utf-8')
+            
+            # Parse encrypted data
+            parts = encrypted_data.split(b'|', 2)
+            if len(parts) != 3:
+                raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+                
+            salt_b64, nonce_b64, ciphertext = parts
+            
+            # Decode components
+            salt = base64.urlsafe_b64decode(salt_b64)
+            nonce = base64.urlsafe_b64decode(nonce_b64)
+            
+            # Use derived key for decryption - ORIGINAL BEHAVIOR
+            derived_key = self._derive_key(salt)
+            private_key = PrivateKey(derived_key)
+            public_key = PublicKey(derived_key)
+            box = Box(private_key, public_key)
+            
+            if not isinstance(ciphertext, bytes):
+                ciphertext = ciphertext.encode('utf-8')
+            
+            return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
+                
+        except Exception as e:
+            raise ValueError(f"Decryption failed: {str(e)}")
+    
+    def asymmetric_decrypt(self, encrypted_data: bytes) -> bytes:
+        """
         Decrypt using standard X25519 asymmetric decryption.
+        
+        This is the recommended secure approach that uses proper asymmetric cryptography.
         
         Args:
             encrypted_data: Encrypted data in format salt|nonce|ciphertext
@@ -452,9 +513,10 @@ class StellarSharedDecryption:
     
     def decrypt_with_derived_key(self, encrypted_data: bytes) -> bytes:
         """
-        Decrypt using derived key (legacy behavior).
+        Decrypt using derived key (legacy behavior - DEPRECATED).
         
-        DEPRECATED: Use decrypt() for new implementations.
+        DEPRECATED: This method is deprecated. Use decrypt() for the same behavior
+        or asymmetric_decrypt() for improved security.
         
         Args:
             encrypted_data: Encrypted data in format salt|nonce|ciphertext
@@ -463,36 +525,13 @@ class StellarSharedDecryption:
             bytes: Decrypted message
         """
         warnings.warn(
-            "decrypt_with_derived_key() is deprecated, use decrypt() for proper asymmetric decryption",
+            "decrypt_with_derived_key() is deprecated, use decrypt() for the same behavior or asymmetric_decrypt() for improved security",
             DeprecationWarning,
             stacklevel=2
         )
         
-        try:
-            # Parse encrypted data
-            parts = encrypted_data.split(b'|', 2)
-            if len(parts) != 3:
-                raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
-                
-            salt_b64, nonce_b64, ciphertext = parts
-            
-            # Decode components
-            salt = base64.urlsafe_b64decode(salt_b64)
-            nonce = base64.urlsafe_b64decode(nonce_b64)
-            
-            # Use derived key for decryption
-            derived_key = self._derive_key(salt)
-            private_key = PrivateKey(derived_key)
-            public_key = PublicKey(derived_key)
-            box = Box(private_key, public_key)
-            
-            if not isinstance(ciphertext, bytes):
-                ciphertext = ciphertext.encode('utf-8')
-            
-            return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
-                
-        except Exception as e:
-            raise ValueError(f"Decryption failed: {str(e)}")
+        # Delegate to decrypt() for the same behavior
+        return self.decrypt(encrypted_data)
     
     def decrypt_as_text(self, text  : bytes) -> str:
         return self.decrypt(text).decode('utf-8')
