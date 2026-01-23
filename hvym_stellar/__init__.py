@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.13"
+__version__ = "0.14"
 
 import nacl
 from nacl import utils, secret
@@ -61,12 +61,38 @@ class StellarSharedKey:
         # Hash the combination to get the derived key
         return hashlib.sha256(combined).digest()
     
-    def shared_secret(self) -> bytes:
-        """Get the derived shared secret"""
-        return self._derive_key()
+    def shared_secret(self, random_salt: bool = False) -> bytes:
+        """
+        Get the derived shared secret
+        
+        Args:
+            random_salt: If True, use instance's random salt (current behavior)
+                        If False, use deterministic derivation (new default behavior)
+        
+        Returns:
+            bytes: The derived shared secret
+        """
+        if random_salt:
+            # Current behavior - uses random instance salt
+            return self._derive_key()
+        else:
+            # New behavior - uses deterministic derivation without salt
+            return self._box.shared_key()
     
-    def shared_secret_as_hex(self) -> str:
-        return nacl.encoding.HexEncoder.encode(self.shared_secret()).decode('utf-8')
+    def shared_secret_as_hex(self, random_salt: bool = False) -> str:
+        """
+        Get the derived shared secret as hex string
+        
+        Args:
+            random_salt: If True, use instance's random salt (current behavior)
+                        If False, use deterministic derivation (new default behavior)
+        
+        Returns:
+            str: Hex-encoded derived shared secret
+        """
+        return nacl.encoding.HexEncoder.encode(
+            self.shared_secret(random_salt=random_salt)
+        ).decode('utf-8')
     
     def hash_of_shared_secret(self):
         hasher = hashlib.sha256()

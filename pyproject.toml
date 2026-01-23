@@ -36,3 +36,8 @@ dependencies = [
 
 [project.urls]
 Home = "https://github.com/inviti8/hvym_stellar"
+
+[dependency-groups]
+dev = [
+    "flit>=3.12.0",
+]
