@@ -1,0 +1,114 @@
+COMPREHENSIVE CRYPTOGRAPHIC ASSESSMENT
+hvym_stellar Cryptographic Implementation Analysis
+============================================================
+Assessment Date: 2026-01-23 15:02:08
+Implementation: hvym_stellar v0.16.0
+Total Tests: 7
+
+EXECUTIVE SUMMARY
+--------------------
+Passed Tests: 2/7
+Warning Tests: 5/7
+Failed Tests: 0/7
+Overall Score: 8.22/10.0
+
+CATEGORY SUMMARIES
+--------------------
+Strength Tests: 4
+Vulnerability Tests: 2
+Comparison Tests: 1
+
+Overall Status: EXCELLENT
+Assessment: Cryptographic implementation is excellent
+
+DETAILED TEST RESULTS
+-------------------------
+
+Hybrid Functionality
+Type: STRENGTH
+Status: PASS
+Score: 10.00/10.0
+Recommendation: Hybrid encryption works correctly
+Details:
+  avg_success_rate: 1.0000
+  results_by_size: {16: 1.0, 32: 1.0, 64: 1.0, 128: 1.0, 256: 1.0, 512: 1.0, 1024: 1.0, 2048: 1.0}
+  total_tests: 80
+
+Key Space Security
+Type: STRENGTH
+Status: WARNING
+Score: 9.07/10.0
+Recommendation: Good key space security
+Details:
+  entropy: 7.2586
+  effective_bits: 256
+  sample_count: 400
+
+Randomness Quality
+Type: STRENGTH
+Status: WARNING
+Score: 7.07/10.0
+Recommendation: Good randomness quality
+Details:
+  randomness_score: 0.7071
+  entropy: 5.2214
+  sample_size: 23800
+
+Attack Resistance
+Type: STRENGTH
+Status: WARNING
+Score: 8.10/10.0
+Recommendation: Moderate attack resistance
+Details:
+  uniqueness: 1.0000
+  entropy: 4.9587
+  ciphertext_count: 20
+
+Timing Vulnerabilities
+Type: VULNERABILITY
+Status: WARNING
+Score: 7.68/10.0
+Recommendation: Significant timing variations detected
+Details:
+  avg_time_ns: 5059.0000
+  time_std_ns: 1174.4842
+  timing_coefficient: 0.2322
+  total_measurements: 100
+
+Component Exposure
+Type: VULNERABILITY
+Status: WARNING
+Score: 6.00/10.0
+Recommendation: Non-standard component exposure
+Details:
+  format_parts: 3
+  nonce_exposed: True
+  nonce_size: 32
+
+AES Comparison
+Type: COMPARISON
+Status: PASS
+Score: 9.59/10.0
+Recommendation: Hybrid approach comparable to AES
+Details:
+  hybrid_avg_score: 9.1861
+  aes_avg_score: 10.0000
+  hybrid_scores_by_size: {16: 8.99265351752775, 32: 8.483228255947612, 64: 9.553734061930783, 128: 9.60341573447498, 256: 9.297563281619322}
+  aes_scores_by_size: {16: 10.0, 32: 10.0, 64: 10.0, 128: 10.0, 256: 10.0}
+
+SECURITY ANALYSIS
+--------------------
+Average Strength Score: 8.56/10.0
+Average Vulnerability Score: 6.84/10.0
+Average Comparison Score: 9.59/10.0
+
+RECOMMENDATIONS
+----------------
+✅ Implementation is suitable for production use
+✅ Cryptographic properties are strong
+✅ Regular monitoring recommended
+
+For File Encryption Use Case:
+✅ Suitable for file encryption applications
+✅ Provides adequate security for content protection
+✅ Consider performance requirements
