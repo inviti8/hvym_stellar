@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.14"
+__version__ = "0.16"
 
 import nacl
 from nacl import utils, secret
@@ -15,6 +15,7 @@ import time
 from enum import Enum
 import hmac
 from typing import Optional, Dict, Any
+import warnings
 
 class Stellar25519KeyPair:
     def __init__(self, keyPair : Keypair):
@@ -39,6 +40,64 @@ class Stellar25519KeyPair:
     def private_key(self) -> PrivateKey:
         return self._private
 
+
+def extract_salt_from_encrypted(encrypted_data: bytes) -> bytes:
+    """
+    Extract salt from encrypted data returned by encrypt()
+    
+    Args:
+        encrypted_data: The encrypted data in format salt|nonce|ciphertext
+        
+    Returns:
+        bytes: The extracted salt
+        
+    Raises:
+        ValueError: If encrypted data format is invalid
+    """
+    parts = encrypted_data.split(b'|', 2)
+    if len(parts) != 3:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+    return base64.urlsafe_b64decode(parts[0])
+
+
+def extract_nonce_from_encrypted(encrypted_data: bytes) -> bytes:
+    """
+    Extract nonce from encrypted data returned by encrypt()
+    
+    Args:
+        encrypted_data: The encrypted data in format salt|nonce|ciphertext
+        
+    Returns:
+        bytes: The extracted nonce
+        
+    Raises:
+        ValueError: If encrypted data format is invalid
+    """
+    parts = encrypted_data.split(b'|', 2)
+    if len(parts) != 3:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+    return base64.urlsafe_b64decode(parts[1])
+
+
+def extract_ciphertext_from_encrypted(encrypted_data: bytes) -> bytes:
+    """
+    Extract ciphertext from encrypted data returned by encrypt()
+    
+    Args:
+        encrypted_data: The encrypted data in format salt|nonce|ciphertext
+        
+    Returns:
+        bytes: The extracted ciphertext
+        
+    Raises:
+        ValueError: If encrypted data format is invalid
+    """
+    parts = encrypted_data.split(b'|', 2)
+    if len(parts) != 3:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+    return parts[2]
+
+
 class StellarSharedKey:
     def __init__(self, senderKeyPair: Stellar25519KeyPair, recieverPub: str):
         # Generate a random 32-byte salt for this instance
@@ -52,8 +111,16 @@ class StellarSharedKey:
     def nonce(self) -> bytes:
         return nacl.encoding.HexEncoder.encode(self._nonce).decode('utf-8')
     
-    def _derive_key(self, salt: bytes = None) -> bytes:
-        """Derive a key using the salt and shared secret"""
+    def _derive_key(self, salt: bytes = None, nonce: bytes = None) -> bytes:
+        """Derive a key using the salt and shared secret
+        
+        Args:
+            salt: Salt for key derivation. If None, uses instance salt
+            nonce: Nonce for key derivation (currently unused, kept for future extensibility)
+            
+        Returns:
+            bytes: The derived key
+        """
         if salt is None:
             salt = self._salt
         # Combine salt and shared secret
@@ -61,60 +128,163 @@ class StellarSharedKey:
         # Hash the combination to get the derived key
         return hashlib.sha256(combined).digest()
     
-    def shared_secret(self, random_salt: bool = False) -> bytes:
+    def shared_secret(self, salt: bytes = None, nonce: bytes = None, random_salt: bool = None) -> bytes:
         """
         Get the derived shared secret
         
         Args:
-            random_salt: If True, use instance's random salt (current behavior)
-                        If False, use deterministic derivation (new default behavior)
+            salt: Optional salt for key derivation. If None, uses instance salt
+            nonce: Optional nonce for key derivation (currently unused)
+            random_salt: Deprecated. If True, use instance's random salt
+                        If False, use deterministic derivation (raw ECDH)
         
         Returns:
             bytes: The derived shared secret
         """
-        if random_salt:
-            # Current behavior - uses random instance salt
-            return self._derive_key()
-        else:
-            # New behavior - uses deterministic derivation without salt
-            return self._box.shared_key()
+        if random_salt is not None:
+            warnings.warn(
+                "random_salt parameter is deprecated, use salt parameter instead",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            if random_salt:
+                return self._derive_key()
+            else:
+                return self._box.shared_key()
+        
+        if salt is None:
+            return self._box.shared_key()  # Default: deterministic raw ECDH
+        return self._derive_key(salt=salt, nonce=nonce)
     
-    def shared_secret_as_hex(self, random_salt: bool = False) -> str:
+    def shared_secret_as_hex(self, salt: bytes = None, nonce: bytes = None, random_salt: bool = None) -> str:
         """
         Get the derived shared secret as hex string
         
         Args:
-            random_salt: If True, use instance's random salt (current behavior)
-                        If False, use deterministic derivation (new default behavior)
+            salt: Optional salt for key derivation
+            nonce: Optional nonce for key derivation (currently unused)
+            random_salt: Deprecated. Use salt parameter instead
         
         Returns:
             str: Hex-encoded derived shared secret
         """
         return nacl.encoding.HexEncoder.encode(
-            self.shared_secret(random_salt=random_salt)
+            self.shared_secret(salt=salt, nonce=nonce, random_salt=random_salt)
         ).decode('utf-8')
     
-    def hash_of_shared_secret(self):
+    def hash_of_shared_secret(self, salt: bytes = None, nonce: bytes = None, random_salt: bool = None) -> str:
+        """
+        Get hash of the derived shared secret
+        
+        Args:
+            salt: Optional salt for key derivation
+            nonce: Optional nonce for key derivation (currently unused)
+            random_salt: Deprecated. Use salt parameter instead
+        
+        Returns:
+            str: Hex-encoded hash of the derived shared secret
+        """
         hasher = hashlib.sha256()
-        hasher.update(self.shared_secret())
+        hasher.update(self.shared_secret(salt=salt, nonce=nonce, random_salt=random_salt))
+        return hasher.hexdigest()
+    
+    def _asymmetric_derive_key(self) -> bytes:
+        """
+        Internal method for asymmetric key operations.
+        
+        Returns the raw X25519 shared secret directly without salt derivation.
+        This is used for proper asymmetric encryption/decryption.
+        """
+        return self._box.shared_key()
+    
+    def asymmetric_shared_secret(self) -> bytes:
+        """
+        Get the raw X25519 asymmetric shared secret.
+        
+        This provides the standard ECDH shared secret without any salt derivation.
+        Use this for standard asymmetric cryptographic operations.
+        
+        Returns:
+            bytes: The raw X25519 shared secret (32 bytes)
+        """
+        return self._asymmetric_derive_key()
+    
+    def asymmetric_shared_secret_as_hex(self) -> str:
+        """
+        Get the raw X25519 asymmetric shared secret as hex string.
+        
+        Returns:
+            str: Hex-encoded raw X25519 shared secret
+        """
+        return nacl.encoding.HexEncoder.encode(
+            self.asymmetric_shared_secret()
+        ).decode('utf-8')
+    
+    def asymmetric_hash_of_shared_secret(self) -> str:
+        """
+        Get hash of the raw X25519 asymmetric shared secret.
+        
+        Returns:
+            str: Hex-encoded hash of the raw X25519 shared secret
+        """
+        hasher = hashlib.sha256()
+        hasher.update(self.asymmetric_shared_secret())
         return hasher.hexdigest()
     
     def encrypt(self, text: bytes) -> bytes:
-        # Generate a new random salt for each encryption
+        """
+        Encrypt using standard X25519 asymmetric encryption.
+        
+        This is the recommended secure approach that uses proper asymmetric cryptography.
+        
+        Args:
+            text: Message to encrypt
+            
+        Returns:
+            bytes: Encrypted data in format salt|nonce|ciphertext
+        """
+        # Generate new random salt and nonce for each encryption
         self._salt = secrets.token_bytes(32)
-        # Generate a new nonce for each encryption
         self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
         
-        # Derive the encryption key
+        # Use standard X25519 encryption (proper asymmetric pattern)
+        encrypted = self._box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
+        
+        # Return salt + '|' + nonce + '|' + ciphertext
+        return (base64.urlsafe_b64encode(self._salt) + b'|' +
+                base64.urlsafe_b64encode(self._nonce) + b'|' +
+                encrypted.ciphertext)
+    
+    def encrypt_with_derived_key(self, text: bytes) -> bytes:
+        """
+        Encrypt using derived key (legacy behavior).
+        
+        DEPRECATED: Use encrypt() for new implementations.
+        This method exists for backward compatibility.
+        
+        Args:
+            text: Message to encrypt
+            
+        Returns:
+            bytes: Encrypted data in format salt|nonce|ciphertext
+        """
+        warnings.warn(
+            "encrypt_with_derived_key() is deprecated, use encrypt() for proper asymmetric encryption",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
+        # Generate new random salt and nonce
+        self._salt = secrets.token_bytes(32)
+        self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
+        
+        # Use derived key (self-encryption pattern)
         derived_key = self._derive_key()
         private_key = PrivateKey(derived_key)
-        public_key = PublicKey(derived_key)  # Same key for both sides
+        public_key = PublicKey(derived_key)
         box = Box(private_key, public_key)
-        
-        # Encrypt the message with the derived key
         encrypted = box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
         
-        # Return salt + '|' + nonce + '|' + ciphertext as bytes
         return (base64.urlsafe_b64encode(self._salt) + b'|' +
                 base64.urlsafe_b64encode(self._nonce) + b'|' +
                 encrypted.ciphertext)
@@ -136,70 +306,190 @@ class StellarSharedDecryption:
         # Initialize the box immediately
         self._box = Box(self._private, PublicKey(self._raw_pub))
 
-    def shared_secret(self) -> bytes:
-        return self._box.shared_key()
+    def shared_secret(self, salt: bytes = None, nonce: bytes = None) -> bytes:
+        """
+        Get the derived shared secret
+        
+        Args:
+            salt: Optional salt for key derivation. If None, uses raw ECDH secret
+            nonce: Optional nonce for key derivation (currently unused)
+        
+        Returns:
+            bytes: The derived shared secret
+        """
+        if salt is None:
+            return self._box.shared_key()  # Default behavior (backward compatible)
+        return self._derive_key(salt)
     
-    def shared_secret_as_hex(self) -> str:
-        return nacl.encoding.HexEncoder.encode(self.shared_secret()).decode('utf-8')
+    def shared_secret_as_hex(self, salt: bytes = None, nonce: bytes = None) -> str:
+        """
+        Get the derived shared secret as hex string
+        
+        Args:
+            salt: Optional salt for key derivation
+            nonce: Optional nonce for key derivation
+        
+        Returns:
+            str: Hex-encoded derived shared secret
+        """
+        return nacl.encoding.HexEncoder.encode(
+            self.shared_secret(salt=salt, nonce=nonce)
+        ).decode('utf-8')
     
-    def hash_of_shared_secret(self):
+    def hash_of_shared_secret(self, salt: bytes = None, nonce: bytes = None, random_salt: bool = None) -> str:
+        """
+        Get hash of the derived shared secret
+        
+        Args:
+            salt: Optional salt for key derivation
+            nonce: Optional nonce for key derivation (currently unused)
+        
+        Returns:
+            str: Hex-encoded hash of the derived shared secret
+        """
         hasher = hashlib.sha256()
-        hasher.update(self.shared_secret())
+        hasher.update(self.shared_secret(salt=salt, nonce=nonce))
         return hasher.hexdigest()
     
-    def _derive_key(self, salt: bytes) -> bytes:
-        """Derive the same key using the provided salt"""
+    def _derive_key(self, salt: bytes, nonce: bytes = None) -> bytes:
+        """
+        Derive the same key using the provided salt
+        
+        Args:
+            salt: Salt for key derivation
+            nonce: Nonce for key derivation (currently unused, kept for consistency)
+            
+        Returns:
+            bytes: The derived key
+        """
         # Combine salt and shared secret
         combined = salt + self._box.shared_key()
         # Hash the combination to get the derived key
         return hashlib.sha256(combined).digest()
     
+    def _asymmetric_derive_key(self) -> bytes:
+        """
+        Internal method for asymmetric key operations.
+        
+        Returns the raw X25519 shared secret directly without salt derivation.
+        """
+        return self._box.shared_key()
+    
+    def asymmetric_shared_secret(self) -> bytes:
+        """
+        Get the raw X25519 asymmetric shared secret.
+        
+        Returns:
+            bytes: The raw X25519 shared secret (32 bytes)
+        """
+        return self._asymmetric_derive_key()
+    
+    def asymmetric_shared_secret_as_hex(self) -> str:
+        """
+        Get the raw X25519 asymmetric shared secret as hex string.
+        
+        Returns:
+            str: Hex-encoded raw X25519 shared secret
+        """
+        return nacl.encoding.HexEncoder.encode(
+            self.asymmetric_shared_secret()
+        ).decode('utf-8')
+    
+    def asymmetric_hash_of_shared_secret(self) -> str:
+        """
+        Get hash of the raw X25519 asymmetric shared secret.
+        
+        Returns:
+            str: Hex-encoded hash of the raw X25519 shared secret
+        """
+        hasher = hashlib.sha256()
+        hasher.update(self.asymmetric_shared_secret())
+        return hasher.hexdigest()
+    
     def decrypt(self, encrypted_data: bytes) -> bytes:
+        """
+        Decrypt using standard X25519 asymmetric decryption.
+        
+        Args:
+            encrypted_data: Encrypted data in format salt|nonce|ciphertext
+            
+        Returns:
+            bytes: Decrypted message
+        """
         try:
-            # Ensure we're working with bytes and strip any potential whitespace/line endings
+            # Ensure we're working with bytes
             if isinstance(encrypted_data, str):
                 encrypted_data = encrypted_data.encode('utf-8')
             
-            # Clean up the input by stripping whitespace and line endings
-            encrypted_data = encrypted_data.strip()
-            
-            # Split the message into components
+            # Parse encrypted data
             parts = encrypted_data.split(b'|', 2)
             if len(parts) != 3:
-                raise ValueError("Invalid encrypted data format: expected 3 parts separated by '|'")
+                raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
                 
             salt_b64, nonce_b64, ciphertext = parts
             
-            # Decode base64 components
-            try:
-                salt = base64.urlsafe_b64decode(salt_b64)
-                nonce = base64.urlsafe_b64decode(nonce_b64)
-            except Exception as e:
-                raise ValueError(f"Failed to decode salt or nonce: {str(e)}")
+            # Decode nonce (salt is extracted for potential key derivation)
+            nonce = base64.urlsafe_b64decode(nonce_b64)
             
-            # Derive the same key using the salt
-            derived_key = self._derive_key(salt)
-            
-            # Create a new box with the derived key
-            private_key = PrivateKey(derived_key)
-            public_key = PublicKey(derived_key)  # Same key for both sides
-            box = Box(private_key, public_key)
-            
-            # Ensure ciphertext is in the correct format
+            # Use standard X25519 decryption
             if not isinstance(ciphertext, bytes):
                 ciphertext = ciphertext.encode('utf-8')
             
-            # First try with hex encoding (original behavior)
+            # First try with hex encoding (new format)
             try:
-                return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
+                return self._box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
             except Exception as hex_err:
-                # If hex decoding fails, try raw bytes as a fallback
-                if "Non-hexadecimal digit found" in str(hex_err):
+                # If hex decoding fails, try raw bytes (legacy format)
+                if "Odd-length string" in str(hex_err) or "Non-hexadecimal digit found" in str(hex_err):
                     try:
-                        return box.decrypt(ciphertext, nonce)
+                        return self._box.decrypt(ciphertext, nonce)
                     except Exception as raw_err:
                         raise ValueError(f"Decryption failed with both hex and raw bytes: {str(raw_err)}")
                 raise ValueError(f"Decryption failed: {str(hex_err)}")
+                
+        except Exception as e:
+            raise ValueError(f"Decryption failed: {str(e)}")
+    
+    def decrypt_with_derived_key(self, encrypted_data: bytes) -> bytes:
+        """
+        Decrypt using derived key (legacy behavior).
+        
+        DEPRECATED: Use decrypt() for new implementations.
+        
+        Args:
+            encrypted_data: Encrypted data in format salt|nonce|ciphertext
+            
+        Returns:
+            bytes: Decrypted message
+        """
+        warnings.warn(
+            "decrypt_with_derived_key() is deprecated, use decrypt() for proper asymmetric decryption",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
+        try:
+            # Parse encrypted data
+            parts = encrypted_data.split(b'|', 2)
+            if len(parts) != 3:
+                raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+                
+            salt_b64, nonce_b64, ciphertext = parts
+            
+            # Decode components
+            salt = base64.urlsafe_b64decode(salt_b64)
+            nonce = base64.urlsafe_b64decode(nonce_b64)
+            
+            # Use derived key for decryption
+            derived_key = self._derive_key(salt)
+            private_key = PrivateKey(derived_key)
+            public_key = PublicKey(derived_key)
+            box = Box(private_key, public_key)
+            
+            if not isinstance(ciphertext, bytes):
+                ciphertext = ciphertext.encode('utf-8')
+            
+            return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
                 
         except Exception as e:
             raise ValueError(f"Decryption failed: {str(e)}")
