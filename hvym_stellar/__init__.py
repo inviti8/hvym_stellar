@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.17.1"
+__version__ = "0.18.0"
 
 import nacl
 from nacl import utils, secret
@@ -233,10 +233,10 @@ class StellarSharedKey:
     
     def encrypt(self, text: bytes) -> bytes:
         """
-        Encrypt using derived key (original behavior).
+        Encrypt using hybrid approach (salted key derivation + self-encryption).
         
-        This is the original hybrid encryption approach for backward compatibility.
-        For new implementations, consider using asymmetric_encrypt() for better security.
+        This approach provides moderate security with salted key derivation.
+        For higher security, consider using asymmetric_encrypt() which uses standard X25519.
         
         Args:
             text: Message to encrypt
@@ -282,28 +282,6 @@ class StellarSharedKey:
         return (base64.urlsafe_b64encode(self._salt) + b'|' +
                 base64.urlsafe_b64encode(self._nonce) + b'|' +
                 encrypted.ciphertext)
-    
-    def encrypt_with_derived_key(self, text: bytes) -> bytes:
-        """
-        Encrypt using derived key (legacy behavior - DEPRECATED).
-        
-        DEPRECATED: This method is deprecated. Use encrypt() for the same behavior
-        or asymmetric_encrypt() for improved security.
-        
-        Args:
-            text: Message to encrypt
-            
-        Returns:
-            bytes: Encrypted data in format salt|nonce|ciphertext
-        """
-        warnings.warn(
-            "encrypt_with_derived_key() is deprecated, use encrypt() for the same behavior or asymmetric_encrypt() for improved security",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        
-        # Delegate to encrypt() for the same behavior
-        return self.encrypt(text)
     
     def encrypt_as_ciphertext(self, text: bytes) -> bytes:
         # Return just the ciphertext portion (without salt) for backward compatibility
@@ -424,10 +402,10 @@ class StellarSharedDecryption:
     
     def decrypt(self, encrypted_data: bytes) -> bytes:
         """
-        Decrypt using derived key (original behavior).
+        Decrypt using hybrid approach (salted key derivation + self-encryption).
         
-        This is the original hybrid decryption approach for backward compatibility.
-        For new implementations, consider using asymmetric_decrypt() for better security.
+        This approach provides moderate security with salted key derivation.
+        For higher security, consider using asymmetric_decrypt() which uses standard X25519.
         
         Args:
             encrypted_data: Encrypted data in format salt|nonce|ciphertext
@@ -510,28 +488,6 @@ class StellarSharedDecryption:
                 
         except Exception as e:
             raise ValueError(f"Decryption failed: {str(e)}")
-    
-    def decrypt_with_derived_key(self, encrypted_data: bytes) -> bytes:
-        """
-        Decrypt using derived key (legacy behavior - DEPRECATED).
-        
-        DEPRECATED: This method is deprecated. Use decrypt() for the same behavior
-        or asymmetric_decrypt() for improved security.
-        
-        Args:
-            encrypted_data: Encrypted data in format salt|nonce|ciphertext
-            
-        Returns:
-            bytes: Decrypted message
-        """
-        warnings.warn(
-            "decrypt_with_derived_key() is deprecated, use decrypt() for the same behavior or asymmetric_decrypt() for improved security",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        
-        # Delegate to decrypt() for the same behavior
-        return self.decrypt(encrypted_data)
     
     def decrypt_as_text(self, text  : bytes) -> str:
         return self.decrypt(text).decode('utf-8')
