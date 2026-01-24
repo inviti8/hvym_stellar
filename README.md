@@ -233,17 +233,26 @@ print(f"Hashes match: {asym_hash1 == asym_hash2}")  # True
 ### 8. Asymmetric Encryption (Recommended)
 
 ```python
-# === SECURE ASYMMETRIC ENCRYPTION ===
-# Sender encrypts using standard X25519 pattern
-message = b"Secret message using asymmetric encryption"
-encrypted = sender_key.encrypt(message)  # Uses proper X25519
+# === HYBRID ENCRYPTION (Original Behavior - Backward Compatible) ===
+# This is the original behavior that encrypt() uses
+message = b"Secret message using hybrid encryption"
+encrypted = sender_key.encrypt(message)  # Uses hybrid approach (derived keys)
 
-# Receiver decrypts using standard X25519 pattern
+# Receiver decrypts using hybrid approach
 decrypted = receiver_key.decrypt(encrypted)
-print(f"Decrypted: {decrypted}")  # "Secret message using asymmetric encryption"
+print(f"Decrypted: {decrypted}")  # "Secret message using hybrid encryption"
 
-# === LEGACY ENCRYPTION (Deprecated) ===
-# Old method using derived keys (shows deprecation warning)
+# === ASYMMETRIC ENCRYPTION (New - Recommended) ===
+# More secure approach using standard X25519
+message = b"Secret message using asymmetric encryption"
+encrypted_asym = sender_key.asymmetric_encrypt(message)  # Uses proper X25519
+
+# Receiver decrypts using asymmetric approach
+decrypted_asym = receiver_key.asymmetric_decrypt(encrypted_asym)
+print(f"Asymmetric Decrypted: {decrypted_asym}")  # "Secret message using asymmetric encryption"
+
+# === LEGACY METHODS (Deprecated) ===
+# These delegate to the hybrid approach above
 import warnings
 
 with warnings.catch_warnings(record=True) as w:
@@ -256,35 +265,33 @@ with warnings.catch_warnings(record=True) as w:
     print(f"Deprecation warnings: {len(w)}")  # 2 warnings
 ```
 
-### 9. Migration Guide: Derived to Asymmetric
+### 9. Migration Guide: Hybrid to Asymmetric
 
 ```python
-# === OLD PATTERN (Derived Keys) ===
-# This still works but is less secure
-old_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
+# === HYBRID ENCRYPTION (Current encrypt() behavior) ===
+# This is the default behavior - backward compatible
+hybrid_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
 salt = secrets.token_bytes(32)
-derived_secret = old_key.shared_secret(salt=salt)
-derived_hash = old_key.hash_of_shared_secret(salt=salt)
+derived_secret = hybrid_key.shared_secret(salt=salt)
+derived_hash = hybrid_key.hash_of_shared_secret(salt=salt)
 
-# === NEW PATTERN (Asymmetric Keys) ===
+# === ASYMMETRIC ENCRYPTION (New - Recommended) ===
 # More secure, simpler, and industry standard
-new_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
-asym_secret = new_key.asymmetric_shared_secret()  # No salt needed
-asym_hash = new_key.asymmetric_hash_of_shared_secret()  # More secure
+asym_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
+asym_secret = asym_key.asymmetric_shared_secret()  # No salt needed
+asym_hash = asym_key.asymmetric_hash_of_shared_secret()  # More secure
 
 # === ENCRYPTION MIGRATION ===
-# Old way (deprecated)
-old_encrypted = old_key.encrypt_with_derived_key(message)
+# Current way (hybrid - works fine)
+hybrid_encrypted = hybrid_key.encrypt(message)  # Uses derived keys
 
-# New way (recommended)
-new_encrypted = new_key.encrypt(message)  # Proper X25519
+# New way (recommended for new implementations)
+asym_encrypted = asym_key.asymmetric_encrypt(message)  # Uses standard X25519
 
-# Both can be decrypted with the corresponding receiver key
-old_decrypted = receiver_key.decrypt_with_derived_key(old_encrypted)
-new_decrypted = receiver_key.decrypt(new_encrypted)
+# Both work, but asymmetric is more secure
 ```
 
-### 10. Asymmetric vs Derived Methods Comparison
+### 10. Asymmetric vs Hybrid Methods Comparison
 
 ```python
 # === SECURITY COMPARISON ===
