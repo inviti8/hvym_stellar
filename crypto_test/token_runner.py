@@ -12,6 +12,8 @@ def run_token_harness():
         harness.test_token_tampering,
         harness.test_token_caveat_escalation,
         harness.test_token_location_tampering,
+        harness.test_token_canonical_serialization,
+        harness.test_token_checksum_tampering,
     ]
 
     results = [test() for test in tests]

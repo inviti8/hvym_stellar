@@ -389,3 +389,100 @@ class HvymStellarTokenHarness:
             "INFO",
             "Location tampering causes token rejection",
         )
+
+    def test_token_canonical_serialization(self) -> CryptoTestResult:
+        from hvym_stellar import (
+            StellarSharedKeyTokenBuilder,
+            StellarSharedKeyTokenVerifier,
+            TokenType,
+        )
+
+        builder = StellarSharedKeyTokenBuilder(
+            senderKeyPair=self.sender,
+            recieverPub=self.receiver.public_key(),
+            token_type=TokenType.ACCESS,
+            caveats={"role": "user"},
+            expires_in=300,
+        )
+        token1 = builder.serialize()
+
+        # Verify and then re-serialize via a new builder/verifier pair
+        verifier = StellarSharedKeyTokenVerifier(
+            recieverKeyPair=self.receiver,
+            serializedToken=token1,
+            token_type=TokenType.ACCESS,
+            caveats={"role": "user"},
+            max_age_seconds=600,
+        )
+
+        if not verifier.valid():
+            return CryptoTestResult(
+                "Token canonical serialization",
+                False,
+                "CRITICAL",
+                "Token failed verification before canonical check",
+            )
+
+        # Re-serialize the underlying macaroon and recompute checksum
+        inner = verifier._token.serialize()
+        import hashlib
+        checksum = hashlib.sha256(inner.encode("utf-8")).hexdigest()[:8]
+        token2 = inner + "|" + checksum
+
+        if token1 != token2:
+            return CryptoTestResult(
+                "Token canonical serialization",
+                False,
+                "WARNING",
+                "Token serialization is not canonical (re-serialization differs)",
+            )
+
+        return CryptoTestResult(
+            "Token canonical serialization",
+            True,
+            "INFO",
+            "Token serialization is canonical under current format",
+        )
+
+    def test_token_checksum_tampering(self) -> CryptoTestResult:
+        from hvym_stellar import (
+            StellarSharedKeyTokenBuilder,
+            StellarSharedKeyTokenVerifier,
+            TokenType,
+        )
+
+        builder = StellarSharedKeyTokenBuilder(
+            senderKeyPair=self.sender,
+            recieverPub=self.receiver.public_key(),
+            token_type=TokenType.ACCESS,
+            caveats={},
+            expires_in=300,
+        )
+        token = builder.serialize()
+
+        # Flip last byte of the full token (checksum included)
+        tampered_bytes = bytearray(token.encode("utf-8"))
+        tampered_bytes[-1] ^= 0x01
+        tampered = tampered_bytes.decode("utf-8", errors="ignore")
+
+        try:
+            StellarSharedKeyTokenVerifier(
+                recieverKeyPair=self.receiver,
+                serializedToken=tampered,
+                token_type=TokenType.ACCESS,
+                caveats={},
+                max_age_seconds=600,
+            )
+            return CryptoTestResult(
+                "Token checksum tampering",
+                False,
+                "CRITICAL",
+                "Tampered token passed checksum parsing without error",
+            )
+        except Exception:
+            return CryptoTestResult(
+                "Token checksum tampering",
+                True,
+                "INFO",
+                "Tampered token rejected at checksum verification stage",
+            )
