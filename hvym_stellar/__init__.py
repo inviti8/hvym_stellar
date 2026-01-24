@@ -438,6 +438,9 @@ class StellarSharedDecryption:
             if not isinstance(ciphertext, bytes):
                 ciphertext = ciphertext.encode('utf-8')
             
+            # Strip whitespace and newlines for robust input handling
+            ciphertext = ciphertext.strip()
+            
             return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
                 
         except Exception as e:
@@ -531,7 +534,7 @@ class StellarSharedKeyTokenBuilder:
         if caveats is None:
             caveats = {}
             
-        if expires_in is not None and expires_in > 0:
+        if expires_in is not None:
             expiration_time = _get_current_timestamp() + expires_in
             caveats['exp'] = str(expiration_time)
         
@@ -555,7 +558,12 @@ class StellarSharedKeyTokenBuilder:
             self._token.add_first_party_caveat(f'{key} = {value}')
 
     def serialize(self) -> str:
-        return self._token.serialize()
+        # Serialize the token and add tamper-evident checksum
+        serialized = self._token.serialize()
+        # Add a simple checksum to detect tampering
+        import hashlib
+        checksum = hashlib.sha256(serialized.encode('utf-8')).hexdigest()[:8]
+        return serialized + "|" + checksum
     
     def inspect(self) -> str:
         return self._token.inspect()
@@ -576,7 +584,25 @@ class StellarSharedKeyTokenVerifier:
             caveats: Optional dictionary of required caveats
             max_age_seconds: Optional maximum allowed token age in seconds
         """
-        self._token = Macaroon.deserialize(serializedToken)
+        # Parse token and checksum
+        if isinstance(serializedToken, str):
+            token_parts = serializedToken.rsplit('|', 1)
+        else:
+            token_parts = serializedToken.decode('utf-8').rsplit('|', 1)
+        
+        if len(token_parts) != 2:
+            # Invalid format - no checksum found
+            raise ValueError("Invalid token format: missing checksum")
+        
+        token_data, provided_checksum = token_parts
+        
+        # Verify checksum to detect tampering
+        import hashlib
+        calculated_checksum = hashlib.sha256(token_data.encode('utf-8')).hexdigest()[:8]
+        if calculated_checksum != provided_checksum:
+            raise ValueError("Token tampering detected: checksum mismatch")
+            
+        self._token = Macaroon.deserialize(token_data)
         self._location = token_type.name
         self._sender_pub = self._token.identifier
         self._sender_secret = None
@@ -665,7 +691,18 @@ class StellarSharedKeyTokenVerifier:
             
         except (ValueError, IndexError):
             return False
-    
+
+    def _get_required_caveats(self) -> Dict[str, str]:
+        """Extract required caveats from the verifier setup."""
+        # This is a workaround to get the caveats that were added during initialization
+        # We need to reconstruct them from the token itself
+        caveats = {}
+        for caveat in self._token.caveats:
+            if ' = ' in caveat.caveat_id:
+                key, value = caveat.caveat_id.split(' = ', 1)
+                caveats[key] = value
+        return caveats
+                                
     def valid(self) -> bool:
         """Check if the token is valid.
         
@@ -676,25 +713,12 @@ class StellarSharedKeyTokenVerifier:
         if not self._token_location_matches():
             return False
             
-        # First verify the signature
+        # CRITICAL: Verify signature with proper caveat handling
+        # Use the original verifier but ensure no fallback behavior
         try:
-            self._verifier.verify(
-                self._token,
-                self._signing_key
-            )
-        except Exception as e:
-            # For backward compatibility, try with the raw shared secret hash if available
-            try:
-                box = Box(self._shared_decryption._private, PublicKey(self._shared_decryption._raw_pub))
-                raw_shared_secret = box.shared_key()
-                hasher = hashlib.sha256()
-                hasher.update(raw_shared_secret)
-                self._verifier.verify(
-                    self._token,
-                    hasher.hexdigest()
-                )
-            except Exception:
-                return False
+            self._verifier.verify(self._token, self._signing_key)
+        except Exception:
+            return False  # FAIL FAST - SIGNATURE INVALID
         
         # Only check expiration after signature is verified
         if self.is_expired():

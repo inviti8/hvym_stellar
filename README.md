@@ -32,17 +32,19 @@ pip install hvym_stellar
 ### 1. Creating a Token
 
 ```python
-from hvym_stellar import StellarSharedKeyTokenBuilder, TokenType
+from hvym_stellar import StellarSharedKeyTokenBuilder, TokenType, Stellar25519KeyPair
 from stellar_sdk import Keypair
 
 # Generate or load Stellar keypairs
-sender_kp = Keypair.random()
-receiver_kp = Keypair.random()
+sender_stellar_kp = Keypair.random()
+receiver_stellar_kp = Keypair.random()
+sender_kp = Stellar25519KeyPair(sender_stellar_kp)
+receiver_kp = Stellar25519KeyPair(receiver_stellar_kp)
 
 # Create a new token
 token = StellarSharedKeyTokenBuilder(
     sender_kp,
-    receiver_kp.public_key,
+    receiver_kp.public_key(),
     token_type=TokenType.ACCESS,
     expires_in=3600,  # 1 hour expiration
     caveats={"user_id": "123", "role": "admin"}
@@ -55,14 +57,21 @@ serialized_token = token.serialize()
 ### 2. Verifying a Token
 
 ```python
-from hvym_stellar import StellarSharedKeyTokenVerifier, TokenType
+from hvym_stellar import StellarSharedKeyTokenVerifier, TokenType, Stellar25519KeyPair
+from stellar_sdk import Keypair
+
+# Generate or load Stellar keypairs (same as creation)
+sender_stellar_kp = Keypair.random()
+receiver_stellar_kp = Keypair.random()
+sender_kp = Stellar25519KeyPair(sender_stellar_kp)
+receiver_kp = Stellar25519KeyPair(receiver_stellar_kp)
 
 # Verify the token
 verifier = StellarSharedKeyTokenVerifier(
     receiver_kp,
     serialized_token,
     TokenType.ACCESS,
-    expected_caveats={"user_id": "123"},
+    caveats={"user_id": "123", "role": "admin"},  # Must match ALL caveats in token
     max_age_seconds=3600  # Optional: enforce maximum token age
 )
 
@@ -70,18 +79,31 @@ if verifier.valid():
     print("Token is valid!")
     
     # Access token claims
-    print("Token expires at:", verifier.get_expiration_time())
+    print("Token expires at:", verifier._get_expiration_time())
     print("Is expired:", verifier.is_expired())
+else:
+    print("Token validation failed - check that all caveats match")
 ```
+
+**Note**: The `caveats` parameter in verification must include ALL caveats that were added during token creation. If you only specify some caveats, verification will fail. For more flexible validation, you can omit the `caveats` parameter entirely.
 
 ### 3. Sharing Secrets
 
 ```python
+from hvym_stellar import StellarSharedKeyTokenBuilder, TokenType, Stellar25519KeyPair
+from stellar_sdk import Keypair
+
+# Generate or load Stellar keypairs
+sender_stellar_kp = Keypair.random()
+receiver_stellar_kp = Keypair.random()
+sender_kp = Stellar25519KeyPair(sender_stellar_kp)
+receiver_kp = Stellar25519KeyPair(receiver_stellar_kp)
+
 # Sender: Create token with a secret
 secret_data = "sensitive-information-here"
 token_with_secret = StellarSharedKeyTokenBuilder(
     sender_kp,
-    receiver_kp.public_key,
+    receiver_kp.public_key(),
     token_type=TokenType.SECRET,
     secret=secret_data,
     expires_in=300  # 5 minutes
@@ -92,7 +114,8 @@ serialized_secret_token = token_with_secret.serialize()
 verifier = StellarSharedKeyTokenVerifier(
     receiver_kp,
     serialized_secret_token,
-    TokenType.SECRET
+    TokenType.SECRET,
+    max_age_seconds=600  # Allow tokens up to 10 minutes old
 )
 
 if verifier.valid():
@@ -106,7 +129,7 @@ if verifier.valid():
 ### 4. Consistent Shared Key Derivation (Sender-Receiver Model)
 
 ```python
-from hvym_stellar import StellarSharedKey, StellarSharedDecryption
+from hvym_stellar import StellarSharedKey, StellarSharedDecryption, Stellar25519KeyPair
 from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted
 from stellar_sdk import Keypair
 
