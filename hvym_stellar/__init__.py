@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.17.0"
+__version__ = "0.17.1"
 
 import nacl
 from nacl import utils, secret
