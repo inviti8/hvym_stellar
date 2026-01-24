@@ -290,66 +290,6 @@ class TestStellarSharedKey(unittest.TestCase):
         # But the derived key should be used for encryption
         self.assertEqual(derived_key, hashlib.sha256(sender_key._salt + sender_key._box.shared_key()).digest())
 
-    def test_method_delegation_compatibility(self):
-        """Test that legacy methods delegate to new methods correctly."""
-        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
-        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
-        
-        message = b"Test message for delegation compatibility"
-        
-        # Test that encrypt_with_derived_key delegates to encrypt
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            
-            encrypted_legacy = sender_key.encrypt_with_derived_key(message)
-            
-            # Should have deprecation warning
-            self.assertEqual(len(w), 1)  # One warning for encrypt_with_derived_key
-            self.assertTrue("deprecated" in str(w[0].message).lower())
-        
-        # Test that decrypt_with_derived_key delegates to decrypt
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            
-            decrypted_legacy = receiver_key.decrypt_with_derived_key(encrypted_legacy)
-            
-            # Should have deprecation warning
-            self.assertEqual(len(w), 1)  # One warning for decrypt_with_derived_key
-            self.assertTrue("deprecated" in str(w[0].message).lower())
-        
-        # Verify it works correctly (should be same as using encrypt/decrypt directly)
-        self.assertEqual(decrypted_legacy, message)
-        
-        # Test that both methods produce the same result when called sequentially
-        # (since they both delegate to the same underlying method)
-        encrypted_direct = sender_key.encrypt(message)
-        decrypted_direct = receiver_key.decrypt(encrypted_direct)
-        
-        # Both should work correctly and produce the same original message
-        self.assertEqual(decrypted_legacy, message)
-        self.assertEqual(decrypted_direct, message)
-        self.assertEqual(decrypted_legacy, decrypted_direct)
-
-    def test_legacy_encryption_compatibility(self):
-        """Test that legacy encryption methods still work with deprecation warnings."""
-        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
-        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
-        
-        message = b"Test message for legacy compatibility"
-        
-        # Should trigger deprecation warnings
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            
-            encrypted_legacy = sender_key.encrypt_with_derived_key(message)
-            decrypted_legacy = receiver_key.decrypt_with_derived_key(encrypted_legacy)
-            
-            # Should have deprecation warnings
-            self.assertEqual(len(w), 2)  # One for encrypt, one for decrypt
-            self.assertTrue(any("deprecated" in str(w[i].message).lower() for i in range(len(w))))
-        
-        self.assertEqual(decrypted_legacy, message)
-
     def test_cross_method_consistency(self):
         """Test consistency between asymmetric and derived methods."""
         sk = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())

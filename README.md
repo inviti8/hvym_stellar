@@ -241,19 +241,6 @@ encrypted = sender_key.asymmetric_encrypt(message)  # Uses proper X25519
 # Receiver decrypts using standard X25519 pattern
 decrypted = receiver_key.asymmetric_decrypt(encrypted)
 print(f"Decrypted: {decrypted}")  # "Secret message using asymmetric encryption"
-
-# === LEGACY ENCRYPTION (Deprecated) ===
-# Old method using derived keys (shows deprecation warning)
-import warnings
-
-with warnings.catch_warnings(record=True) as w:
-    warnings.simplefilter("always")
-    
-    encrypted_legacy = sender_key.encrypt_with_derived_key(message)
-    decrypted_legacy = receiver_key.decrypt_with_derived_key(encrypted_legacy)
-    
-    print(f"Legacy decrypted: {decrypted_legacy}")
-    print(f"Deprecation warnings: {len(w)}")  # 2 warnings
 ```
 
 ### 9. Migration Guide: Derived to Asymmetric
@@ -273,18 +260,15 @@ asym_secret = new_key.asymmetric_shared_secret()  # No salt needed
 asym_hash = new_key.asymmetric_hash_of_shared_secret()  # More secure
 
 # === ENCRYPTION MIGRATION ===
-# Old way (deprecated)
-old_encrypted = old_key.encrypt_with_derived_key(message)
-
-# New way (recommended - hybrid approach)
+# Hybrid approach (moderate security - original behavior)
 new_encrypted = new_key.encrypt(message)  # Uses hybrid approach (original)
 
 # For asymmetric encryption (highest security)
 new_asym_encrypted = new_key.asymmetric_encrypt(message)  # Uses proper X25519
 
 # Both can be decrypted with the corresponding receiver key
-old_decrypted = receiver_key.decrypt_with_derived_key(old_encrypted)
 new_decrypted = receiver_key.decrypt(new_encrypted)
+new_asym_decrypted = receiver_key.asymmetric_decrypt(new_asym_encrypted)
 ```
 
 ### 10. Asymmetric vs Derived Methods Comparison
@@ -340,20 +324,20 @@ This library has undergone comprehensive security assessment to validate its cry
 
 #### Security Recommendations
 
-##### Hybrid Key Scheme (Legacy `encrypt_with_derived_key`)
+##### Hybrid Key Scheme (Original `encrypt`)
 
-**Security Level**: **MODERATE security - Working but deprecated**
+**Security Level**: **MODERATE security - Original approach**
 
 - ✅ **Functional** - Works correctly for encryption/decryption
 - ✅ **Backward compatible** - Existing code continues to work
 - ✅ **Adequate security** - Comparable to AES symmetric encryption
-- ⚠️ **Deprecated** - Use standard approach for new implementations
-- ⚠️ **Lower performance** - Slower than standard approach
+- ✅ **Salted derivation** - Uses SHA-256 salted key derivation
+- ⚠️ **Lower performance** - Slower than asymmetric approach
 - ⚠️ **More complex** - Requires salt management
 
-**Use Case**: Suitable for existing implementations that need backward compatibility.
+**Use Case**: Suitable for existing implementations and moderate security requirements.
 
-##### Asymmetric Flow (Recommended `encrypt`)
+##### Asymmetric Flow (Recommended `asymmetric_encrypt`)
 
 **Security Level**: **Maximum security with industry standards**
 
@@ -384,11 +368,6 @@ encrypted = key.encrypt(message)  # Uses hybrid approach (original)
 # Status: Recommended for new implementations
 key = StellarSharedKey(sender_kp, receiver_kp.public_key())
 encrypted = key.asymmetric_encrypt(message)  # Uses asymmetric approach
-
-# === LEGACY METHODS (Deprecated) ===
-# Status: Still work but delegate to new methods
-encrypted = key.encrypt_with_derived_key(message)  # Same as encrypt()
-decrypted = key.decrypt_with_derived_key(encrypted)  # Same as decrypt()
 ```
 
 #### For File Encryption Use Case
@@ -472,9 +451,6 @@ encrypted = shared_key.encrypt(message_bytes)
 # Encrypt data (asymmetric approach - recommended for new implementations)
 encrypted_asymmetric = shared_key.asymmetric_encrypt(message_bytes)
 
-# Encrypt data (deprecated - uses derived keys)
-encrypted_legacy = shared_key.encrypt_with_derived_key(message_bytes)
-
 # === ASYMMETRIC METHODS (Recommended for Security) ===
 
 # Get raw X25519 shared secret (most secure)
@@ -504,9 +480,6 @@ decrypted = decrypt_key.decrypt(encrypted_data)
 
 # Decrypt data (asymmetric approach - recommended for new implementations)
 decrypted_asymmetric = decrypt_key.asymmetric_decrypt(encrypted_data)
-
-# Decrypt data (deprecated - uses derived keys)
-decrypted_legacy = decrypt_key.decrypt_with_derived_key(encrypted_data)
 
 # === ASYMMETRIC METHODS (Recommended for Security) ===
 
@@ -579,9 +552,7 @@ Version 0.16 introduces asymmetric key derivation for enhanced security. Existin
 old_key = StellarSharedKey(sender_kp, receiver_pub)
 salt = secrets.token_bytes(32)
 derived_secret = old_key.shared_secret(salt=salt)
-# derived_encrypted = old_key.encrypt_with_derived_key(message)  # BROKEN!
-
-# === CURRENT WORKING PATTERN (v0.16 - Asymmetric Keys) ===
+# === CURRENT WORKING PATTERN (v0.17+ - Both Approaches Work) ===
 # Recommended - HIGH security rating
 new_key = StellarSharedKey(sender_kp, receiver_pub)
 asym_secret = new_key.asymmetric_shared_secret()  # No salt needed

@@ -1,7 +1,7 @@
 COMPREHENSIVE CRYPTOGRAPHIC ASSESSMENT
 hvym_stellar Cryptographic Implementation Analysis
 ============================================================
-Assessment Date: 2026-01-23 15:36:53
+Assessment Date: 2026-01-23 16:25:54
 Implementation: hvym_stellar v0.16.0
 Total Tests: 8
 
@@ -10,7 +10,7 @@ EXECUTIVE SUMMARY
 Passed Tests: 3/8
 Warning Tests: 5/8
 Failed Tests: 0/8
-Overall Score: 8.39/10.0
+Overall Score: 8.32/10.0
 
 CATEGORY SUMMARIES
 --------------------
@@ -60,31 +60,31 @@ Details:
 Key Space Security
 Type: STRENGTH
 Status: WARNING
-Score: 9.09/10.0
+Score: 9.13/10.0
 Recommendation: Good key space security
 Details:
-  entropy: 7.2698
+  entropy: 7.3041
   effective_bits: 256
   sample_count: 400
 
 Randomness Quality
 Type: STRENGTH
 Status: WARNING
-Score: 7.12/10.0
+Score: 7.11/10.0
 Recommendation: Good randomness quality
 Details:
-  randomness_score: 0.7117
-  entropy: 5.2176
+  randomness_score: 0.7105
+  entropy: 5.2174
   sample_size: 23800
 
 Attack Resistance
 Type: STRENGTH
 Status: WARNING
-Score: 8.10/10.0
+Score: 8.11/10.0
 Recommendation: Moderate attack resistance
 Details:
   uniqueness: 1.0000
-  entropy: 4.9641
+  entropy: 4.9703
   ciphertext_count: 20
 
 Component Exposure
@@ -100,19 +100,19 @@ Details:
 AES Comparison
 Type: COMPARISON
 Status: WARNING
-Score: 6.79/10.0
+Score: 6.25/10.0
 Recommendation: AES outperforms hybrid approach
 Details:
-  hybrid_avg_score: 6.7937
-  aes_avg_score: 9.6360
-  hybrid_scores_by_size: {16: 6.7084379751593115, 32: 6.76522506619594, 64: 6.942011535548521, 128: 6.727772210511766, 256: 6.824950726330389}
-  aes_scores_by_size: {16: 10.0, 32: 10.0, 64: 10.0, 128: 10.0, 256: 8.179852454846095}
+  hybrid_avg_score: 6.2537
+  aes_avg_score: 10.0000
+  hybrid_scores_by_size: {16: 5.83760511944249, 32: 5.8745845723281445, 64: 5.589942657573684, 128: 7.002683596018665, 256: 6.963903454506177}
+  aes_scores_by_size: {16: 10.0, 32: 10.0, 64: 10.0, 128: 10.0, 256: 10.0}
 
 SECURITY ANALYSIS
 --------------------
-Average Strength Score: 9.05/10.0
+Average Strength Score: 9.06/10.0
 Average Vulnerability Score: 6.00/10.0
-Average Comparison Score: 6.79/10.0
+Average Comparison Score: 6.25/10.0
 
 RECOMMENDATIONS
 ----------------
