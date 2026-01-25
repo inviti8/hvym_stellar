@@ -331,6 +331,50 @@ class TestStellarSharedKey(unittest.TestCase):
         self.assertEqual(hex2, key2.hex())
         self.assertIsInstance(hash2, str)
 
+    def test_signature_verification_with_valid_address(self):
+        """Test signature verification with valid sender address."""
+        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
+        
+        message = b"Test message for signature verification"
+        encrypted = sender_key.encrypt(message)
+        
+        # Test decryption WITH valid from_address (should succeed)
+        sender_address = self.sender_stellar_kp.public_key
+        decrypted = receiver_key.decrypt(encrypted, from_address=sender_address)
+        
+        self.assertEqual(decrypted, message)
+        
+    def test_signature_verification_with_invalid_address(self):
+        """Test signature verification with invalid sender address."""
+        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
+        
+        message = b"Test message for signature verification"
+        encrypted = sender_key.encrypt(message)
+        
+        # Test decryption WITH invalid from_address (should fail)
+        wrong_kp = Keypair.random()
+        wrong_address = wrong_kp.public_key
+        
+        with self.assertRaises(ValueError) as context:
+            receiver_key.decrypt(encrypted, from_address=wrong_address)
+        
+        self.assertIn("Signature verification failed", str(context.exception))
+        
+    def test_signature_verification_without_address(self):
+        """Test decryption without from_address (backward compatibility)."""
+        sender_key = StellarSharedKey(self.sender_kp, self.reciever_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.reciever_kp, self.sender_kp.public_key())
+        
+        message = b"Test message for signature verification"
+        encrypted = sender_key.encrypt(message)
+        
+        # Test decryption WITHOUT from_address (should succeed for backward compatibility)
+        decrypted = receiver_key.decrypt(encrypted)
+        
+        self.assertEqual(decrypted, message)
+
 
 def run_legacy_tests():
     """Run the original tests for backward compatibility."""

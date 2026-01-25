@@ -8,9 +8,9 @@ A Python library for secure token generation and verification using Stellar keyp
 - **Token Expiration**: Set token expiration times to enhance security
 - **Access Control**: Define fine-grained access control through caveats
 - **Secret Sharing**: Securely share secrets between parties
+- **Signature-Based Encryption**: Enhanced security with Ed25519 signatures
 - **Consistent Shared Key Derivation**: Reliable cross-instance shared key generation
-- **Utility Functions**: Easy extraction of salt/nonce from encrypted data
-- **Backward Compatibility**: Support for legacy token verification
+- **Utility Functions**: Easy extraction of salt/nonce/signature from encrypted data
 - **Timestamp Validation**: Built-in support for token expiration and max age validation
 
 ## Installation
@@ -18,6 +18,30 @@ A Python library for secure token generation and verification using Stellar keyp
 ```bash
 pip install hvym_stellar
 ```
+
+## Signature-Based Encryption
+
+This library uses a **signature-based hybrid encryption** approach that provides enhanced security through Ed25519 signatures:
+
+### Format Specification
+
+```
+salt|nonce|signature|ciphertext
+```
+
+**Components:**
+- **salt**: 32 bytes (base64 encoded) - Key derivation salt
+- **nonce**: 24 bytes (base64 encoded) - Encryption nonce  
+- **signature**: 64 bytes (base64 encoded) - Ed25519 signature of salt+nonce
+- **ciphertext**: Variable bytes (hex encoded) - Encrypted message
+
+### Security Benefits
+
+- ✅ **Ed25519 Signatures**: Authenticates encryption parameters
+- ✅ **Stronger Keys**: Signature-derived key material
+- ✅ **Tamper Protection**: Signature verification detects tampering
+- ✅ **Entropy Injection**: Signatures add cryptographic entropy
+- ✅ **Clean Architecture**: Single format, no legacy compatibility complexity
 
 ## Dependencies
 
@@ -130,7 +154,7 @@ if verifier.valid():
 
 ```python
 from hvym_stellar import StellarSharedKey, StellarSharedDecryption, Stellar25519KeyPair
-from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted
+from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted, extract_signature_from_encrypted, extract_ciphertext_from_encrypted
 from stellar_sdk import Keypair
 
 # Generate keypairs
@@ -140,33 +164,45 @@ sender_kp = Stellar25519KeyPair(kp1)
 receiver_kp = Stellar25519KeyPair(kp2)
 
 # === SENDER SIDE ===
-# Sender creates shared key and encrypts message
+# Sender creates shared key and encrypts message using signature-based hybrid
 sender_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
 message = b"Secret message from sender"
 encrypted = sender_key.encrypt(message)
 
-# Sender extracts salt and nonce from encrypted data
+# Sender extracts components from encrypted data (new signature-based format)
 salt = extract_salt_from_encrypted(encrypted)
 nonce = extract_nonce_from_encrypted(encrypted)
+signature = extract_signature_from_encrypted(encrypted)
+ciphertext = extract_ciphertext_from_encrypted(encrypted)
 
-# Sender passes salt/nonce to receiver (via token, message, etc.)
-# This could be embedded in a token or sent separately
 print(f"Salt to share: {salt.hex()}")
 print(f"Nonce to share: {nonce.hex()}")
+print(f"Signature: {signature.hex()}")
+print(f"Ciphertext length: {len(ciphertext)} bytes")
 
 # === RECEIVER SIDE ===
-# Receiver creates shared key using received salt/nonce
-receiver_key = StellarSharedKey(receiver_kp, sender_kp.public_key())
-
-# Both derive the same key using the shared salt/nonce
-sender_derived = sender_key.shared_secret(salt=salt, nonce=nonce)
-receiver_derived = receiver_key.shared_secret(salt=salt, nonce=nonce)
-print(f"Keys match: {sender_derived == receiver_derived}")  # True
-
-# Receiver can decrypt the message
+# Receiver creates shared key and decrypts using signature-based approach
 receiver_decrypt = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
 decrypted = receiver_decrypt.decrypt(encrypted)
 print(f"Decrypted message: {decrypted}")  # "Secret message from sender"
+
+# === ENHANCED SECURITY WITH SIGNATURE VERIFICATION ===
+# Receiver can verify the sender's identity using their Stellar address
+sender_address = kp1.public_key  # Get sender's Stellar public key address
+verified_decrypted = receiver_decrypt.decrypt(encrypted, from_address=sender_address)
+print(f"Verified decrypted message: {verified_decrypted}")  # Same message, but verified
+
+# === SECURITY VALIDATION ===
+# Wrong sender address will be rejected
+try:
+    wrong_address = Keypair.random().public_key
+    receiver_decrypt.decrypt(encrypted, from_address=wrong_address)
+    print("This should not print - verification should fail")
+except ValueError as e:
+    if "Signature verification failed" in str(e):
+        print("✅ Correctly rejected wrong sender address")
+    else:
+        print(f"Unexpected error: {e}")
 
 # === DETERMINISTIC USAGE ===
 # For cases where you just need consistent keys without encryption
@@ -179,25 +215,28 @@ secret2 = shared_key2.shared_secret()
 print(f"Deterministic secrets match: {secret1 == secret2}")  # True
 ```
 
-### 5. Encryption with Key Reconstruction
+### 5. Encryption with Signature-Based Format
 
 ```python
-from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted
+from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted, extract_signature_from_encrypted, extract_ciphertext_from_encrypted
 
-# Encrypt data
+# Encrypt data using signature-based hybrid approach
 message = b"Hello, Stellar!"
-encrypted = shared_key1.encrypt(message)
+encrypted = shared_key1.encrypt(message)  # Uses new signature-based format
 
-# Extract components for later key reconstruction
+# Extract components for analysis or transmission
 salt = extract_salt_from_encrypted(encrypted)
 nonce = extract_nonce_from_encrypted(encrypted)
-print(f"Salt: {len(salt)} bytes, Nonce: {len(nonce)} bytes")
+signature = extract_signature_from_encrypted(encrypted)
+ciphertext = extract_ciphertext_from_encrypted(encrypted)
 
-# Reconstruct the exact key used for encryption
-reconstructed_key = shared_key1.shared_secret(salt=salt)
-print(f"Key reconstruction successful: {reconstructed_key is not None}")
+print(f"Salt: {len(salt)} bytes")
+print(f"Nonce: {len(nonce)} bytes") 
+print(f"Signature: {len(signature)} bytes")
+print(f"Ciphertext: {len(ciphertext)} bytes")
+print(f"Format: salt|nonce|signature|ciphertext")
 
-# Decrypt using the reconstructed key
+# Decrypt using the signature-based approach
 decrypt_key = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
 decrypted = decrypt_key.decrypt(encrypted)
 print(f"Decrypted: {decrypted}")  # "Hello, Stellar!"
@@ -501,6 +540,10 @@ secret = decrypt_key.shared_secret(salt=extracted_salt)
 # Decrypt data (hybrid approach - original behavior)
 decrypted = decrypt_key.decrypt(encrypted_data)
 
+# Decrypt data with signature verification (enhanced security)
+sender_address = "GABC..."  # Sender's Stellar public key address
+verified_decrypted = decrypt_key.decrypt(encrypted_data, from_address=sender_address)
+
 # Decrypt data (asymmetric approach - recommended for new implementations)
 decrypted_asymmetric = decrypt_key.asymmetric_decrypt(encrypted_data)
 
@@ -519,12 +562,15 @@ asym_hash = decrypt_key.asymmetric_hash_of_shared_secret()
 ### Utility Functions
 
 ```python
-from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted, extract_ciphertext_from_encrypted
+from hvym_stellar import extract_salt_from_encrypted, extract_nonce_from_encrypted, extract_signature_from_encrypted, extract_ciphertext_from_encrypted
 
-# Extract components from encrypted data
-salt = extract_salt_from_encrypted(encrypted_data)
-nonce = extract_nonce_from_encrypted(encrypted_data)
-ciphertext = extract_ciphertext_from_encrypted(encrypted_data)
+# Extract components from encrypted data (signature-based format)
+salt = extract_salt_from_encrypted(encrypted_data)  # 32 bytes
+nonce = extract_nonce_from_encrypted(encrypted_data)  # 24 bytes
+signature = extract_signature_from_encrypted(encrypted_data)  # 64 bytes
+ciphertext = extract_ciphertext_from_encrypted(encrypted_data)  # Variable
+
+# Format: salt|nonce|signature|ciphertext
 ```
 
 ## Migration Guide

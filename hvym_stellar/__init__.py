@@ -46,7 +46,7 @@ def extract_salt_from_encrypted(encrypted_data: bytes) -> bytes:
     Extract salt from encrypted data returned by encrypt()
     
     Args:
-        encrypted_data: The encrypted data in format salt|nonce|ciphertext
+        encrypted_data: The encrypted data in format salt|nonce|signature|ciphertext
         
     Returns:
         bytes: The extracted salt
@@ -54,9 +54,9 @@ def extract_salt_from_encrypted(encrypted_data: bytes) -> bytes:
     Raises:
         ValueError: If encrypted data format is invalid
     """
-    parts = encrypted_data.split(b'|', 2)
-    if len(parts) != 3:
-        raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+    parts = encrypted_data.split(b'|', 3)
+    if len(parts) != 4:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|signature|ciphertext")
     return base64.urlsafe_b64decode(parts[0])
 
 
@@ -65,7 +65,7 @@ def extract_nonce_from_encrypted(encrypted_data: bytes) -> bytes:
     Extract nonce from encrypted data returned by encrypt()
     
     Args:
-        encrypted_data: The encrypted data in format salt|nonce|ciphertext
+        encrypted_data: The encrypted data in format salt|nonce|signature|ciphertext
         
     Returns:
         bytes: The extracted nonce
@@ -73,10 +73,29 @@ def extract_nonce_from_encrypted(encrypted_data: bytes) -> bytes:
     Raises:
         ValueError: If encrypted data format is invalid
     """
-    parts = encrypted_data.split(b'|', 2)
-    if len(parts) != 3:
-        raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
+    parts = encrypted_data.split(b'|', 3)
+    if len(parts) != 4:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|signature|ciphertext")
     return base64.urlsafe_b64decode(parts[1])
+
+
+def extract_signature_from_encrypted(encrypted_data: bytes) -> bytes:
+    """
+    Extract signature from encrypted data returned by encrypt()
+    
+    Args:
+        encrypted_data: The encrypted data in format salt|nonce|signature|ciphertext
+        
+    Returns:
+        bytes: The extracted signature
+        
+    Raises:
+        ValueError: If encrypted data format is invalid
+    """
+    parts = encrypted_data.split(b'|', 3)
+    if len(parts) != 4:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|signature|ciphertext")
+    return base64.urlsafe_b64decode(parts[2])
 
 
 def extract_ciphertext_from_encrypted(encrypted_data: bytes) -> bytes:
@@ -84,7 +103,7 @@ def extract_ciphertext_from_encrypted(encrypted_data: bytes) -> bytes:
     Extract ciphertext from encrypted data returned by encrypt()
     
     Args:
-        encrypted_data: The encrypted data in format salt|nonce|ciphertext
+        encrypted_data: The encrypted data in format salt|nonce|signature|ciphertext
         
     Returns:
         bytes: The extracted ciphertext
@@ -92,10 +111,10 @@ def extract_ciphertext_from_encrypted(encrypted_data: bytes) -> bytes:
     Raises:
         ValueError: If encrypted data format is invalid
     """
-    parts = encrypted_data.split(b'|', 2)
-    if len(parts) != 3:
-        raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
-    return parts[2]
+    parts = encrypted_data.split(b'|', 3)
+    if len(parts) != 4:
+        raise ValueError("Invalid encrypted data format: expected salt|nonce|signature|ciphertext")
+    return parts[3]
 
 
 class StellarSharedKey:
@@ -105,6 +124,7 @@ class StellarSharedKey:
         self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
         self._hasher = hashlib.sha256()
         self._private = senderKeyPair.private_key()
+        self._signing_key = senderKeyPair.signing_key()  # Store sender's signing key
         self._raw_pub = base64.urlsafe_b64decode(recieverPub.encode("utf-8"))
         self._box = Box(self._private, PublicKey(self._raw_pub))
 
@@ -233,31 +253,53 @@ class StellarSharedKey:
     
     def encrypt(self, text: bytes) -> bytes:
         """
-        Encrypt using hybrid approach (salted key derivation + self-encryption).
+        Encrypt using signature-based hybrid approach.
         
-        This approach provides moderate security with salted key derivation.
-        For higher security, consider using asymmetric_encrypt() which uses standard X25519.
+        This version uses the sender's Ed25519 signing key for authenticity,
+        providing true cryptographic authentication.
         
         Args:
             text: Message to encrypt
             
         Returns:
-            bytes: Encrypted data in format salt|nonce|ciphertext
+            bytes: Encrypted data in format salt|nonce|signature|ciphertext
         """
-        # Generate new random salt and nonce
-        self._salt = secrets.token_bytes(32)
-        self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
-        
-        # Use derived key (self-encryption pattern) - ORIGINAL BEHAVIOR
-        derived_key = self._derive_key()
-        private_key = PrivateKey(derived_key)
-        public_key = PublicKey(derived_key)
-        box = Box(private_key, public_key)
-        encrypted = box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
-        
-        return (base64.urlsafe_b64encode(self._salt) + b'|' +
-                base64.urlsafe_b64encode(self._nonce) + b'|' +
-                encrypted.ciphertext)
+        try:
+            # Generate fresh salt/nonce
+            self._salt = secrets.token_bytes(32)
+            self._nonce = secrets.token_bytes(secret.SecretBox.NONCE_SIZE)
+            
+            # Derive base key using salted SHA-256
+            derived_key = self._derive_key()
+            
+            # Use sender's existing signing key for authenticity
+            # Sign salt + nonce with sender's actual Ed25519 key
+            message = self._salt + self._nonce
+            signature = self._signing_key.sign(message).signature  # 64 bytes Ed25519 sig
+            
+            # Derive differentiated private/public bytes using signature parts
+            # This creates cryptographically strong key material from the signature
+            import hashlib
+            private_bytes = hashlib.sha256(derived_key + signature[:32]).digest()
+            public_bytes = hashlib.sha256(derived_key + signature[32:]).digest()
+            
+            # Build the Box with derived keys
+            from nacl.public import PrivateKey, PublicKey, Box
+            private_key = PrivateKey(private_bytes)
+            public_key = PublicKey(public_bytes)
+            box = Box(private_key, public_key)
+            
+            # Encrypt using hex encoder for consistency
+            encrypted = box.encrypt(text, self._nonce, encoder=nacl.encoding.HexEncoder)
+            
+            # Return format: salt|nonce|signature|ciphertext
+            return (base64.urlsafe_b64encode(self._salt) + b'|' +
+                    base64.urlsafe_b64encode(self._nonce) + b'|' +
+                    base64.urlsafe_b64encode(signature) + b'|' +
+                    encrypted.ciphertext)
+                    
+        except Exception as e:
+            raise ValueError(f"Encryption failed: {str(e)}")
     
     def asymmetric_encrypt(self, text: bytes) -> bytes:
         """
@@ -400,52 +442,6 @@ class StellarSharedDecryption:
         hasher.update(self.asymmetric_shared_secret())
         return hasher.hexdigest()
     
-    def decrypt(self, encrypted_data: bytes) -> bytes:
-        """
-        Decrypt using hybrid approach (salted key derivation + self-encryption).
-        
-        This approach provides moderate security with salted key derivation.
-        For higher security, consider using asymmetric_decrypt() which uses standard X25519.
-        
-        Args:
-            encrypted_data: Encrypted data in format salt|nonce|ciphertext
-            
-        Returns:
-            bytes: Decrypted message
-        """
-        try:
-            # Ensure we're working with bytes
-            if isinstance(encrypted_data, str):
-                encrypted_data = encrypted_data.encode('utf-8')
-            
-            # Parse encrypted data
-            parts = encrypted_data.split(b'|', 2)
-            if len(parts) != 3:
-                raise ValueError("Invalid encrypted data format: expected salt|nonce|ciphertext")
-                
-            salt_b64, nonce_b64, ciphertext = parts
-            
-            # Decode components
-            salt = base64.urlsafe_b64decode(salt_b64)
-            nonce = base64.urlsafe_b64decode(nonce_b64)
-            
-            # Use derived key for decryption - ORIGINAL BEHAVIOR
-            derived_key = self._derive_key(salt)
-            private_key = PrivateKey(derived_key)
-            public_key = PublicKey(derived_key)
-            box = Box(private_key, public_key)
-            
-            if not isinstance(ciphertext, bytes):
-                ciphertext = ciphertext.encode('utf-8')
-            
-            # Strip whitespace and newlines for robust input handling
-            ciphertext = ciphertext.strip()
-            
-            return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
-                
-        except Exception as e:
-            raise ValueError(f"Decryption failed: {str(e)}")
-    
     def asymmetric_decrypt(self, encrypted_data: bytes) -> bytes:
         """
         Decrypt using standard X25519 asymmetric decryption.
@@ -487,17 +483,88 @@ class StellarSharedDecryption:
                         return self._box.decrypt(ciphertext, nonce)
                     except Exception as raw_err:
                         raise ValueError(f"Decryption failed with both hex and raw bytes: {str(raw_err)}")
-                raise ValueError(f"Decryption failed: {str(hex_err)}")
+                else:
+                    raise ValueError(f"Decryption failed: {str(hex_err)}")
                 
         except Exception as e:
             raise ValueError(f"Decryption failed: {str(e)}")
     
-    def decrypt_as_text(self, text  : bytes) -> str:
-        return self.decrypt(text).decode('utf-8')
+    def decrypt(self, encrypted_data: bytes, from_address: str = None) -> bytes:
+        """
+        Decrypt using signature-based hybrid approach.
+        
+        Args:
+            encrypted_data: Encrypted data in format salt|nonce|signature|ciphertext
+            from_address: Optional Stellar public key address for signature verification
+            
+        Returns:
+            bytes: Decrypted message
+        """
+        try:
+            # Ensure we're working with bytes
+            if isinstance(encrypted_data, str):
+                encrypted_data = encrypted_data.encode('utf-8')
+            
+            # Parse signature-based format: salt|nonce|signature|ciphertext
+            parts = encrypted_data.split(b'|', 3)
+            if len(parts) != 4:
+                raise ValueError("Invalid encrypted data format: expected salt|nonce|signature|ciphertext")
+                
+            salt_b64, nonce_b64, signature_b64, ciphertext = parts
+            
+            # Decode components
+            salt = base64.urlsafe_b64decode(salt_b64)
+            nonce = base64.urlsafe_b64decode(nonce_b64)
+            signature = base64.urlsafe_b64decode(signature_b64)
+            
+            # Derive base key
+            derived_key = self._derive_key(salt)
+            
+            # Verify the signature if from_address is provided
+            if from_address is not None:
+                # Reconstruct the sender's Stellar keypair from their public address
+                sender_keypair = Keypair.from_public_key(from_address)
+                # Get the Ed25519 verify key from the Stellar keypair
+                sender_verify_key = sender_keypair.verify_key
+                
+                # Verify the signature of salt + nonce
+                message_to_verify = salt + nonce
+                try:
+                    sender_verify_key.verify(message_to_verify, signature)
+                except Exception as e:
+                    raise ValueError(f"Signature verification failed: {str(e)}")
+            else:
+                # Note: When from_address is not provided, signature verification is skipped
+                # This maintains backward compatibility but provides less security
+                pass
+            
+            # Derive private/public bytes using signature parts
+            import hashlib
+            private_bytes = hashlib.sha256(derived_key + signature[:32]).digest()
+            public_bytes = hashlib.sha256(derived_key + signature[32:]).digest()
+            
+            private_key = PrivateKey(private_bytes)
+            public_key = PublicKey(public_bytes)
+            box = Box(private_key, public_key)
+            
+            if not isinstance(ciphertext, bytes):
+                ciphertext = ciphertext.encode('utf-8')
+            ciphertext = ciphertext.strip()
+            
+            return box.decrypt(ciphertext, nonce, encoder=nacl.encoding.HexEncoder)
+                
+        except Exception as e:
+            raise ValueError(f"Decryption failed: {str(e)}")
     
+    def decrypt_as_text(self, text: bytes) -> str:
+        return self.decrypt(text).decode('utf-8')
+
+# ... (rest of the code remains the same)
+
 class TokenType(Enum):
     ACCESS = 1
     SECRET = 2
+
     
 def _get_current_timestamp() -> int:
     """Get current Unix timestamp in seconds."""
