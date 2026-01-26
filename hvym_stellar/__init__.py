@@ -587,6 +587,26 @@ class StellarSharedDecryption(StellarKeyBase):
             str: Decrypted message as UTF-8 string
         """
         return self.decrypt(encrypted_data, from_address).decode('utf-8')
+    
+    def decrypt_from_file(self, file_path: str, from_address: str = None) -> str:
+        """Decrypt token from a text file.
+        
+        Args:
+            file_path: Path to the file containing the encrypted token
+            from_address: Stellar public key address for signature verification (required for signature-based decryption)
+            
+        Returns:
+            str: Decrypted token as UTF-8 string
+        """
+        with open(file_path, 'r', encoding='utf-8') as f:
+            encrypted_content = f.read().strip()
+        
+        encrypted_data = base64.urlsafe_b64decode(encrypted_content.encode('utf-8'))
+        
+        if from_address:
+            return self.decrypt(encrypted_data, from_address).decode('utf-8')
+        else:
+            return self.asymmetric_decrypt(encrypted_data).decode('utf-8')
 
 # ... (rest of the code remains the same)
 
@@ -665,6 +685,18 @@ class StellarSharedKeyTokenBuilder:
     
     def inspect(self) -> str:
         return self._token.inspect()
+    
+    def encrypt_to_file(self, file_path: str) -> None:
+        """Encrypt the token and save it to a text file.
+        
+        Args:
+            file_path: Path to the file where the encrypted token will be saved
+        """
+        serialized_token = self.serialize()
+        encrypted_data = self._shared_key.encrypt(serialized_token.encode('utf-8'))
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(base64.urlsafe_b64encode(encrypted_data).decode('utf-8'))
     
 class StellarSharedKeyTokenVerifier:
     def __init__(self,
