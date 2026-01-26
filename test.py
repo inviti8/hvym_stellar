@@ -384,6 +384,177 @@ class TestStellarSharedKey(unittest.TestCase):
         decrypted = receiver_key.decrypt(encrypted, from_address=sender_address)
         self.assertEqual(decrypted, message)
 
+    def test_from_address_edge_cases(self):
+        """Test edge cases for from_address parameter."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.receiver_kp, self.sender_kp.public_key())
+
+        message = b"Test message"
+        encrypted = sender_key.encrypt(message)
+
+        # Empty string should fail
+        with self.assertRaises(ValueError):
+            receiver_key.decrypt(encrypted, from_address="")
+
+        # Malformed address should fail
+        with self.assertRaises(Exception):
+            receiver_key.decrypt(encrypted, from_address="not-a-valid-stellar-address")
+
+        # Wrong length address should fail
+        with self.assertRaises(Exception):
+            receiver_key.decrypt(encrypted, from_address="GABC123")
+
+    def test_signature_extraction(self):
+        """Test signature extraction from encrypted data."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        message = b"Test message for signature extraction"
+
+        encrypted = sender_key.encrypt(message)
+
+        # Extract signature
+        signature = extract_signature_from_encrypted(encrypted)
+
+        # Verify signature is 64 bytes (Ed25519 signature size)
+        self.assertEqual(len(signature), 64)
+
+        # Verify all components can be extracted
+        salt = extract_salt_from_encrypted(encrypted)
+        nonce = extract_nonce_from_encrypted(encrypted)
+        ciphertext = extract_ciphertext_from_encrypted(encrypted)
+
+        self.assertEqual(len(salt), 32)
+        self.assertEqual(len(nonce), 24)
+        self.assertGreater(len(ciphertext), 0)
+
+    def test_domain_separation(self):
+        """Test that domain separation produces different keys for different purposes."""
+        # Create two shared keys with same keypairs
+        key1 = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        key2 = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+
+        # The raw ECDH shared secret should be the same
+        self.assertEqual(key1._box.shared_key(), key2._box.shared_key())
+
+        # But encryption should produce different ciphertexts (due to random salt/nonce)
+        message = b"Test message"
+        enc1 = key1.encrypt(message)
+        enc2 = key2.encrypt(message)
+
+        self.assertNotEqual(enc1, enc2)
+
+    def test_large_message_encryption(self):
+        """Test encryption/decryption with large messages."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.receiver_kp, self.sender_kp.public_key())
+        sender_address = self.sender_stellar_kp.public_key
+
+        # Test with 1MB message
+        large_message = secrets.token_bytes(1024 * 1024)
+
+        # Hybrid encryption
+        encrypted = sender_key.encrypt(large_message)
+        decrypted = receiver_key.decrypt(encrypted, from_address=sender_address)
+        self.assertEqual(decrypted, large_message)
+
+        # Asymmetric encryption
+        encrypted_asym = sender_key.asymmetric_encrypt(large_message)
+        decrypted_asym = receiver_key.asymmetric_decrypt(encrypted_asym)
+        self.assertEqual(decrypted_asym, large_message)
+
+    def test_wrong_receiver_hybrid_decrypt(self):
+        """Test that wrong receiver cannot decrypt hybrid encrypted data."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+
+        # Create a different receiver
+        wrong_receiver_stellar = Keypair.random()
+        wrong_receiver = Stellar25519KeyPair(wrong_receiver_stellar)
+        wrong_decrypt_key = StellarSharedDecryption(wrong_receiver, self.sender_kp.public_key())
+
+        message = b"Secret message"
+        encrypted = sender_key.encrypt(message)
+
+        # Wrong receiver should fail to decrypt
+        sender_address = self.sender_stellar_kp.public_key
+        with self.assertRaises(Exception):
+            wrong_decrypt_key.decrypt(encrypted, from_address=sender_address)
+
+    def test_replay_consistency(self):
+        """Test that same ciphertext decrypts to same plaintext consistently."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.receiver_kp, self.sender_kp.public_key())
+        sender_address = self.sender_stellar_kp.public_key
+
+        message = b"Test message for replay"
+        encrypted = sender_key.encrypt(message)
+
+        # Decrypt multiple times - should always succeed with same result
+        for _ in range(5):
+            decrypted = receiver_key.decrypt(encrypted, from_address=sender_address)
+            self.assertEqual(decrypted, message)
+
+    def test_token_checksum_tampering(self):
+        """Test that token checksum detects tampering."""
+        token = StellarSharedKeyTokenBuilder(
+            self.sender_kp,
+            self.receiver_kp.public_key(),
+            token_type=TokenType.ACCESS,
+            caveats={"test": "value"}
+        )
+        serialized = token.serialize()
+
+        # Tamper with the token (modify a character before the checksum)
+        parts = serialized.rsplit('|', 1)
+        tampered = parts[0][:-1] + 'X' + '|' + parts[1]
+
+        # Should raise ValueError due to checksum mismatch
+        with self.assertRaises(ValueError) as context:
+            StellarSharedKeyTokenVerifier(
+                self.receiver_kp,
+                tampered,
+                TokenType.ACCESS
+            )
+        self.assertIn("checksum", str(context.exception).lower())
+
+    def test_ciphertext_tampering_detected(self):
+        """Test that ciphertext tampering is detected."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.receiver_kp, self.sender_kp.public_key())
+        sender_address = self.sender_stellar_kp.public_key
+
+        message = b"Test message"
+        encrypted = sender_key.encrypt(message)
+
+        # Tamper with the ciphertext (last component)
+        parts = encrypted.split(b'|')
+        tampered_ciphertext = parts[3][:-2] + b'XX'
+        tampered = b'|'.join(parts[:3] + [tampered_ciphertext])
+
+        # Should fail to decrypt
+        with self.assertRaises(Exception):
+            receiver_key.decrypt(tampered, from_address=sender_address)
+
+    def test_salt_tampering_detected(self):
+        """Test that salt tampering is detected via signature verification."""
+        sender_key = StellarSharedKey(self.sender_kp, self.receiver_kp.public_key())
+        receiver_key = StellarSharedDecryption(self.receiver_kp, self.sender_kp.public_key())
+        sender_address = self.sender_stellar_kp.public_key
+
+        message = b"Test message"
+        encrypted = sender_key.encrypt(message)
+
+        # Tamper with the salt (first component)
+        parts = encrypted.split(b'|')
+        import base64
+        original_salt = base64.urlsafe_b64decode(parts[0])
+        tampered_salt = bytes([b ^ 0x01 for b in original_salt[:4]]) + original_salt[4:]
+        parts[0] = base64.urlsafe_b64encode(tampered_salt)
+        tampered = b'|'.join(parts)
+
+        # Should fail signature verification
+        with self.assertRaises(ValueError) as context:
+            receiver_key.decrypt(tampered, from_address=sender_address)
+        self.assertIn("Signature verification failed", str(context.exception))
+
 
 def run_legacy_tests():
     """Run the original tests for backward compatibility."""
