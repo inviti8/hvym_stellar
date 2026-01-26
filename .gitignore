@@ -4,3 +4,9 @@ hvym_stellar/__pycache__/
 crypto_test/__pycache__/
 
 __pycache__/
+
+.claude/
+
+test_files/test_txt_files/
+
+test_files/test_img_files/

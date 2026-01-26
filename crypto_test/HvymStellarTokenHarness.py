@@ -31,7 +31,7 @@ class HvymStellarTokenHarness:
         caveats = {"role": "user"}
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats=caveats,
             expires_in=300,  # 5 minutes
@@ -39,7 +39,7 @@ class HvymStellarTokenHarness:
         token = builder.serialize()
 
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=self.receiver,
+            receiverKeyPair=self.receiver,
             serializedToken=token,
             token_type=TokenType.ACCESS,
             caveats=caveats,
@@ -64,7 +64,7 @@ class HvymStellarTokenHarness:
     def test_access_token_wrong_caveat(self) -> CryptoTestResult:
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={"role": "user"},
             expires_in=300,
@@ -73,7 +73,7 @@ class HvymStellarTokenHarness:
 
         # Require a different caveat at verification time
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=self.receiver,
+            receiverKeyPair=self.receiver,
             serializedToken=token,
             token_type=TokenType.ACCESS,
             caveats={"role": "admin"},
@@ -100,7 +100,7 @@ class HvymStellarTokenHarness:
 
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={"role": "user"},
             expires_in=300,
@@ -108,7 +108,7 @@ class HvymStellarTokenHarness:
         token = builder.serialize()
 
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=other_receiver,
+            receiverKeyPair=other_receiver,
             serializedToken=token,
             token_type=TokenType.ACCESS,
             caveats={"role": "user"},
@@ -133,7 +133,7 @@ class HvymStellarTokenHarness:
     def test_access_token_expired(self) -> CryptoTestResult:
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={},
             expires_in=1,  # 1 second
@@ -142,7 +142,7 @@ class HvymStellarTokenHarness:
 
         # Simulate strict age requirement
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=self.receiver,
+            receiverKeyPair=self.receiver,
             serializedToken=token,
             token_type=TokenType.ACCESS,
             caveats={},
@@ -172,7 +172,7 @@ class HvymStellarTokenHarness:
         secret_value = "super-secret-value"
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.SECRET,
             caveats={"scope": "test"},
             secret=secret_value,
@@ -181,7 +181,7 @@ class HvymStellarTokenHarness:
         token = builder.serialize()
 
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=self.receiver,
+            receiverKeyPair=self.receiver,
             serializedToken=token,
             token_type=TokenType.SECRET,
             caveats={"scope": "test"},
@@ -226,7 +226,7 @@ class HvymStellarTokenHarness:
 
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.SECRET,
             caveats={},
             secret="top-secret",
@@ -235,7 +235,7 @@ class HvymStellarTokenHarness:
         token = builder.serialize()
 
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=other_receiver,
+            receiverKeyPair=other_receiver,
             serializedToken=token,
             token_type=TokenType.SECRET,
             caveats={},
@@ -264,7 +264,7 @@ class HvymStellarTokenHarness:
     def test_token_tampering(self) -> CryptoTestResult:
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={},
             expires_in=300,
@@ -276,7 +276,7 @@ class HvymStellarTokenHarness:
 
         try:
             verifier = StellarSharedKeyTokenVerifier(
-                recieverKeyPair=self.receiver,
+                receiverKeyPair=self.receiver,
                 serializedToken=tampered,
                 token_type=TokenType.ACCESS,
                 caveats={},
@@ -305,7 +305,7 @@ class HvymStellarTokenHarness:
     def test_token_caveat_escalation(self) -> CryptoTestResult:
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={"role": "user"},
             expires_in=300,
@@ -316,7 +316,7 @@ class HvymStellarTokenHarness:
         tampered = token.replace("role = user", "role = admin")
 
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=self.receiver,
+            receiverKeyPair=self.receiver,
             serializedToken=tampered,
             token_type=TokenType.ACCESS,
             caveats={"role": "admin"},
@@ -347,7 +347,7 @@ class HvymStellarTokenHarness:
     def test_token_location_tampering(self) -> CryptoTestResult:
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={},
             expires_in=300,
@@ -364,7 +364,7 @@ class HvymStellarTokenHarness:
 
         try:
             verifier = StellarSharedKeyTokenVerifier(
-                recieverKeyPair=self.receiver,
+                receiverKeyPair=self.receiver,
                 serializedToken=tampered,
                 token_type=TokenType.ACCESS,
                 caveats={},
@@ -399,7 +399,7 @@ class HvymStellarTokenHarness:
 
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={"role": "user"},
             expires_in=300,
@@ -408,7 +408,7 @@ class HvymStellarTokenHarness:
 
         # Verify and then re-serialize via a new builder/verifier pair
         verifier = StellarSharedKeyTokenVerifier(
-            recieverKeyPair=self.receiver,
+            receiverKeyPair=self.receiver,
             serializedToken=token1,
             token_type=TokenType.ACCESS,
             caveats={"role": "user"},
@@ -453,7 +453,7 @@ class HvymStellarTokenHarness:
 
         builder = StellarSharedKeyTokenBuilder(
             senderKeyPair=self.sender,
-            recieverPub=self.receiver.public_key(),
+            receiverPub=self.receiver.public_key(),
             token_type=TokenType.ACCESS,
             caveats={},
             expires_in=300,
@@ -467,7 +467,7 @@ class HvymStellarTokenHarness:
 
         try:
             StellarSharedKeyTokenVerifier(
-                recieverKeyPair=self.receiver,
+                receiverKeyPair=self.receiver,
                 serializedToken=tampered,
                 token_type=TokenType.ACCESS,
                 caveats={},

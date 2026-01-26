@@ -72,7 +72,7 @@ class HvymStellarAdversarialHarness:
         tampered[-1] ^= 0x01
 
         try:
-            pt = decryptor.decrypt(bytes(tampered))
+            pt = decryptor.decrypt(bytes(tampered), from_address=self.sender.base_stellar_keypair().public_key)
             return CryptoTestResult(
                 "Ciphertext malleability",
                 False,
@@ -264,7 +264,7 @@ class HvymStellarAdversarialHarness:
             shared = StellarSharedKey(self.sender, self.receiver.public_key())
             ct = shared.encrypt(b"test")
             decryptor = StellarSharedDecryption(self.receiver, self.sender.public_key())
-            decryptor.decrypt(ct)
+            decryptor.decrypt(ct, from_address=self.sender.base_stellar_keypair().public_key)
             findings.append(" Authenticated encryption behavior observed")
         except Exception:
             findings.append(" Authenticated encryption unclear")
@@ -331,7 +331,7 @@ class HvymStellarAdversarialHarness:
         bad_decryptor = StellarSharedDecryption(attacker, self.sender.public_key())
 
         try:
-            bad_decryptor.decrypt(ct)
+            bad_decryptor.decrypt(ct, from_address=self.sender.base_stellar_keypair().public_key)
             return CryptoTestResult(
                 "Wrong receiver decryption",
                 False,
@@ -370,7 +370,7 @@ class HvymStellarAdversarialHarness:
         tampered_ct = bytes(tampered_salt) + b'|' + nonce + b'|' + body
 
         try:
-            decryptor.decrypt(tampered_ct)
+            decryptor.decrypt(tampered_ct, from_address=self.sender.base_stellar_keypair().public_key)
             return CryptoTestResult(
                 "Salt tampering",
                 False,
@@ -393,7 +393,7 @@ class HvymStellarAdversarialHarness:
         truncated = ct[:-5]
 
         try:
-            decryptor.decrypt(truncated)
+            decryptor.decrypt(truncated, from_address=self.sender.base_stellar_keypair().public_key)
             return CryptoTestResult(
                 "Truncation resistance",
                 False,
@@ -416,7 +416,7 @@ class HvymStellarAdversarialHarness:
         extended = ct + b"garbage"
 
         try:
-            decryptor.decrypt(extended)
+            decryptor.decrypt(extended, from_address=self.sender.base_stellar_keypair().public_key)
             return CryptoTestResult(
                 "Garbage extension",
                 False,
@@ -441,7 +441,7 @@ class HvymStellarAdversarialHarness:
         msg = b"mode isolation test"
 
         ct_hybrid = shared.encrypt(msg)
-        pt_hybrid = decryptor.decrypt(ct_hybrid)
+        pt_hybrid = decryptor.decrypt(ct_hybrid, from_address=self.sender.base_stellar_keypair().public_key)
 
         ct_asym = shared.asymmetric_encrypt(msg)
         pt_asym = decryptor.asymmetric_decrypt(ct_asym)
@@ -467,7 +467,7 @@ class HvymStellarAdversarialHarness:
             pass
 
         try:
-            decryptor.decrypt(ct_asym)
+            decryptor.decrypt(ct_asym, from_address=self.sender.base_stellar_keypair().public_key)
             return CryptoTestResult(
                 "Mode isolation",
                 False,
@@ -490,7 +490,7 @@ class HvymStellarAdversarialHarness:
         for _ in range(50):
             garbage = secrets.token_bytes(64)
             try:
-                decryptor.decrypt(garbage)
+                decryptor.decrypt(garbage, from_address=self.sender.base_stellar_keypair().public_key)
                 return CryptoTestResult(
                     "Random garbage decryption",
                     False,
@@ -516,12 +516,12 @@ class HvymStellarAdversarialHarness:
 
         msg = b"replay test"
         ct = shared1.encrypt(msg)
-        pt1 = decryptor1.decrypt(ct)
+        pt1 = decryptor1.decrypt(ct, from_address=self.sender.base_stellar_keypair().public_key)
 
         # New instances, same keypairs
         shared2 = StellarSharedKey(self.sender, self.receiver.public_key())
         decryptor2 = StellarSharedDecryption(self.receiver, self.sender.public_key())
-        pt2 = decryptor2.decrypt(ct)
+        pt2 = decryptor2.decrypt(ct, from_address=self.sender.base_stellar_keypair().public_key)
 
         if pt1 != msg or pt2 != msg:
             return CryptoTestResult(
@@ -544,7 +544,7 @@ class HvymStellarAdversarialHarness:
 
         msg = secrets.token_bytes(1024 * 1024)  # 1 MB
         ct = shared.encrypt(msg)
-        pt = decryptor.decrypt(ct)
+        pt = decryptor.decrypt(ct, from_address=self.sender.base_stellar_keypair().public_key)
 
         if pt != msg:
             return CryptoTestResult(

@@ -77,7 +77,7 @@ class ComprehensiveCryptographicAssessment:
                         encrypted = shared_key.encrypt(msg)  # Uses hybrid approach
                         
                         shared_decrypt = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
-                        decrypted = shared_decrypt.decrypt(encrypted)  # Uses hybrid approach
+                        decrypted = shared_decrypt.decrypt(encrypted, from_address=sender_kp.base_stellar_keypair().public_key)  # Uses hybrid approach
                         
                         if decrypted == msg:
                             success_count += 1
@@ -635,7 +635,7 @@ class ComprehensiveCryptographicAssessment:
                         shared_key = StellarSharedKey(sender_kp, receiver_kp.public_key())
                         encrypted = shared_key.encrypt(msg)
                         shared_decrypt = StellarSharedDecryption(receiver_kp, sender_kp.public_key())
-                        decrypted = shared_decrypt.decrypt(encrypted)
+                        decrypted = shared_decrypt.decrypt(encrypted, from_address=sender_kp.base_stellar_keypair().public_key)
                         end_time = time.perf_counter_ns()
                         
                         if decrypted == msg:
