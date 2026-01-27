@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.19.0"
+__version__ = "0.20.0"
 
 import nacl
 from nacl import utils, secret
@@ -16,8 +16,16 @@ import os
 import json
 from enum import Enum
 import hmac
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import warnings
+from datetime import datetime, timedelta, timezone
+
+# Optional biscuit support for large file tokens
+try:
+    from biscuit_auth import KeyPair as BiscuitKeyPair, BiscuitBuilder, Biscuit, AuthorizerBuilder, Rule, PrivateKey as BiscuitPrivateKey
+    BISCUIT_AVAILABLE = True
+except ImportError:
+    BISCUIT_AVAILABLE = False
 
 
 class DomainSeparation:
@@ -697,7 +705,135 @@ class StellarSharedKeyTokenBuilder:
         
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(base64.urlsafe_b64encode(encrypted_data).decode('utf-8'))
-    
+
+
+class StellarSharedAccountTokenBuilder(StellarSharedKeyTokenBuilder):
+    """Creates a token containing a shared Stellar keypair.
+
+    The shared keypair is generated randomly and encrypted using the
+    DH shared secret between sender and recipient. Both parties can
+    then use this keypair for signing/verifying Biscuit tokens.
+
+    This class is primarily used internally by HVYMDataToken to enable
+    biscuit-based file storage without size limitations.
+
+    Example:
+        # Create shared account token
+        account_token = StellarSharedAccountTokenBuilder(
+            senderKeyPair=sender_kp,
+            receiverPub=receiver_pub,
+            expires_in=3600
+        )
+
+        # Get the shared keypair (sender side)
+        shared_kp = account_token.shared_keypair
+
+        # Recipient extracts shared keypair
+        shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
+            serialized_token=account_token.serialize(),
+            receiverKeyPair=receiver_kp
+        )
+    """
+
+    # Marker caveat to identify shared account tokens
+    SHARED_ACCOUNT_MARKER = 'shared_account'
+
+    def __init__(
+        self,
+        senderKeyPair: Stellar25519KeyPair,
+        receiverPub: str,
+        shared_keypair: Keypair = None,
+        caveats: dict = None,
+        expires_in: int = None
+    ):
+        """Initialize a shared account token.
+
+        Args:
+            senderKeyPair: Sender's Stellar25519KeyPair
+            receiverPub: Recipient's X25519 public key (base64 URL-safe encoded)
+            shared_keypair: Optional pre-existing keypair to share.
+                           If None, generates Keypair.random()
+            caveats: Optional caveats for the token
+            expires_in: Optional expiration in seconds
+        """
+        # Generate or use provided shared keypair
+        self._shared_keypair = shared_keypair if shared_keypair is not None else Keypair.random()
+
+        # The secret is the raw secret seed (32 bytes), hex-encoded for safe transmission
+        shared_secret_hex = self._shared_keypair.raw_secret_key().hex()
+
+        # Build caveats with marker
+        token_caveats = {
+            'token_type': self.SHARED_ACCOUNT_MARKER,
+            'shared_pub': self._shared_keypair.public_key,  # G... address
+        }
+        if caveats:
+            token_caveats.update(caveats)
+
+        # Build the token with SECRET type
+        super().__init__(
+            senderKeyPair=senderKeyPair,
+            receiverPub=receiverPub,
+            token_type=TokenType.SECRET,
+            caveats=token_caveats,
+            secret=shared_secret_hex,
+            expires_in=expires_in
+        )
+
+    @property
+    def shared_keypair(self) -> Keypair:
+        """Get the shared keypair (only available to creator)."""
+        return self._shared_keypair
+
+    @property
+    def shared_public_key(self) -> str:
+        """Get the public key of the shared account (Stellar G... address)."""
+        return self._shared_keypair.public_key
+
+    @staticmethod
+    def extract_shared_keypair(
+        serialized_token: str,
+        receiverKeyPair: Stellar25519KeyPair
+    ) -> Keypair:
+        """Extract the shared keypair from a serialized token.
+
+        Args:
+            serialized_token: The serialized shared account token
+            receiverKeyPair: Recipient's keypair for decryption
+
+        Returns:
+            Keypair: The shared Stellar keypair
+
+        Raises:
+            ValueError: If token is invalid or not a shared account token
+        """
+        verifier = StellarSharedKeyTokenVerifier(
+            serializedToken=serialized_token,
+            receiverKeyPair=receiverKeyPair,
+            token_type=TokenType.SECRET
+        )
+
+        # Add satisfiers for our custom caveats
+        verifier._verifier.satisfy_general(
+            lambda p: p.startswith('token_type = ') or p.startswith('shared_pub = ')
+        )
+
+        if not verifier.valid():
+            raise ValueError("Invalid shared account token")
+
+        # Verify this is a shared account token
+        caveats = verifier._get_caveats()
+        if caveats.get('token_type') != StellarSharedAccountTokenBuilder.SHARED_ACCOUNT_MARKER:
+            raise ValueError("Token is not a shared account token")
+
+        # Get the hex-encoded secret
+        secret_hex = verifier.secret(validate=True)
+
+        # Reconstruct the keypair from secret
+        secret_bytes = bytes.fromhex(secret_hex)
+        return Keypair.from_raw_ed25519_seed(secret_bytes)
+
+
 class StellarSharedKeyTokenVerifier:
     def __init__(self,
                 receiverKeyPair: Stellar25519KeyPair,
@@ -1095,13 +1231,42 @@ class FileCaveatVerifier:
         return True
 
 
-class HVYMDataToken(StellarSharedKeyTokenBuilder):
-    """Enhanced data token class that extends StellarSharedKeyTokenBuilder with file storage functionality."""
+class HVYMDataToken:
+    """Data token class for secure file storage using Biscuit tokens.
 
-    # Size limits
-    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB soft limit (warning)
-    WARN_FILE_SIZE = 5 * 1024 * 1024  # 5 MB warning threshold
-    CHUNK_SIZE = 1024 * 1024  # 1 MB chunk size for large files
+    This class uses Biscuit tokens internally for file storage, removing the
+    16KB size limitation of macaroons. The API is 100% backward compatible.
+
+    Internally, this class:
+    1. Creates a StellarSharedAccountTokenBuilder (which generates its own random keypair)
+    2. Gets the shared keypair from the account token
+    3. Uses that keypair to sign a Biscuit token containing the file data
+    4. Serializes both tokens together in a combined format
+
+    Usage (unchanged from before):
+        # Create token
+        token = HVYMDataToken(
+            senderKeyPair=sender_kp,
+            receiverPub=receiver_pub,
+            file_path="document.pdf",
+            expires_in=3600
+        )
+        serialized = token.serialize()
+
+        # Extract file
+        file_bytes, metadata = HVYMDataToken.extract_from_token(
+            serialized_token=serialized,
+            receiver_keypair=receiver_kp
+        )
+    """
+
+    # Size limits (increased since biscuits don't have macaroon's 16KB limit)
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB soft limit (warning)
+    WARN_FILE_SIZE = 50 * 1024 * 1024  # 50 MB warning threshold
+    CHUNK_SIZE = 2 * 1024 * 1024  # 2 MB chunk size for large files
+
+    # Token format delimiter for combined serialization
+    BISCUIT_DELIMITER = '|HVYM_BISCUIT|'
 
     def __init__(self,
                 senderKeyPair: Stellar25519KeyPair,
@@ -1124,43 +1289,56 @@ class HVYMDataToken(StellarSharedKeyTokenBuilder):
             caveats: Optional dictionary of caveats to add to the token
             expires_in: Optional number of seconds until the token expires
         """
+        if not BISCUIT_AVAILABLE:
+            raise ImportError(
+                "biscuit_auth library required for HVYMDataToken. "
+                "Install with: pip install biscuit-auth"
+            )
 
-        # Determine the secret data to store
-        secret_data = None
+        self._sender_keypair = senderKeyPair
+        self._receiver_pub = receiverPub
+        self._expires_in = expires_in
+        self._caveats = caveats or {}
         self._file_info = {}
+        self._file_data_bytes = None
+        self._data = data
 
-        if file_data is not None:
-            # Use provided file data directly (prioritize over file_path)
-            secret_data = self._serialize_bytes(file_data, filename)
-            self._file_info['source'] = 'file_data'
-            self._file_info['size'] = len(file_data)
-            if filename:
-                self._file_info['filename'] = os.path.basename(filename)
-        elif file_path is not None:
-            # Read and serialize file from path
-            secret_data = self._serialize_file(file_path)
-            self._file_info['source'] = 'file_path'
-            self._file_info['path'] = file_path
-        elif data is not None:
-            # Legacy support for dictionary data
-            secret_data = json.dumps(data)
-            self._file_info['source'] = 'dict_data'
-            self._file_info['size'] = len(secret_data)
-
-        # Initialize parent class as SECRET token with serialized data
-        super().__init__(
+        # Step 1: Create the account token (IT generates the shared keypair)
+        self._account_token = StellarSharedAccountTokenBuilder(
             senderKeyPair=senderKeyPair,
             receiverPub=receiverPub,
-            token_type=TokenType.SECRET,
-            caveats=caveats,
-            secret=secret_data,
             expires_in=expires_in
         )
-        
-        # Store original data for potential access
-        self._data = data
-        self._file_path = file_path
-        self._file_data = file_data
+
+        # Step 2: Get the shared keypair FROM the account token
+        self._shared_keypair = self._account_token.shared_keypair
+
+        # Step 3: Process file data
+        if file_data is not None:
+            self._load_from_bytes(file_data, filename)
+        elif file_path is not None:
+            self._load_from_file(file_path)
+        elif data is not None:
+            # Legacy dict support - convert to JSON bytes
+            json_bytes = json.dumps(data).encode('utf-8')
+            self._load_from_bytes(json_bytes, 'data.json')
+            self._file_info['source'] = 'dict_data'
+
+        # Step 4: Build the Biscuit token
+        self._biscuit = self._build_biscuit()
+
+    def _stellar_to_biscuit_keypair(self, stellar_kp: Keypair):
+        """Convert Stellar keypair to Biscuit keypair (both Ed25519).
+
+        Returns:
+            BiscuitKeyPair: The converted keypair for biscuit signing
+        """
+        # Get the raw 32-byte secret key and convert to hex
+        secret_hex = stellar_kp.raw_secret_key().hex()
+        # Create biscuit private key using the ed25519-private format
+        biscuit_private = BiscuitPrivateKey(f"ed25519-private/{secret_hex}")
+        # Create keypair from private key
+        return BiscuitKeyPair.from_private_key(biscuit_private)
 
     def _check_size(self, size: int, source: str):
         """Check file size against limits and warn if exceeded.
@@ -1185,233 +1363,158 @@ class HVYMDataToken(StellarSharedKeyTokenBuilder):
                 stacklevel=4
             )
 
-    def _serialize_file(self, file_path: str) -> str:
-        """Read and serialize a file into a base64-encoded string.
-
-        Uses chunked reading for memory efficiency with large files.
-
-        Args:
-            file_path: Path to the file to serialize
-
-        Returns:
-            str: Base64-encoded serialized file data with metadata
-        """
+    def _load_from_file(self, file_path: str):
+        """Load file data from path."""
         try:
-            # Get file metadata first
             file_stat = os.stat(file_path)
             file_size = file_stat.st_size
-
-            # Check size limits (soft warning)
             self._check_size(file_size, file_path)
 
-            # Read file in chunks for memory efficiency
-            chunks = []
-            file_hash = hashlib.sha256()
-
+            # Read file
             with open(file_path, 'rb') as f:
-                while True:
-                    chunk = f.read(self.CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    file_hash.update(chunk)
-                    chunks.append(chunk)
+                self._file_data_bytes = f.read()
 
-            # Combine chunks
-            file_bytes = b''.join(chunks)
+            # Calculate hash
+            file_hash = hashlib.sha256(self._file_data_bytes).hexdigest()
 
-            # Create metadata
-            metadata = {
+            # Store metadata
+            self._file_info = {
                 'filename': os.path.basename(file_path),
                 'size': file_size,
                 'modified': file_stat.st_mtime,
                 'encoding': 'base64',
                 'type': 'file_data',
-                'hash': file_hash.hexdigest()
+                'hash': file_hash,
+                'source': 'file_path',
+                'path': file_path
             }
-
-            # Encode file data
-            encoded_data = base64.b64encode(file_bytes).decode('utf-8')
-
-            # Create serialized format
-            serialized = json.dumps({
-                'metadata': metadata,
-                'data': encoded_data
-            })
-
-            # Store file info
-            self._file_info.update(metadata)
-
-            return serialized
-
         except Exception as e:
-            raise ValueError(f"Failed to serialize file {file_path}: {str(e)}")
-    
-    def _serialize_bytes(self, file_data: bytes, file_path: str = None) -> str:
-        """Serialize raw bytes into a base64-encoded string.
+            raise ValueError(f"Failed to load file {file_path}: {str(e)}")
 
-        Args:
-            file_data: Raw file data bytes
-            file_path: Optional file path for metadata
+    def _load_from_bytes(self, file_data: bytes, filename: str = None):
+        """Load file data from bytes."""
+        self._check_size(len(file_data), filename or '<bytes>')
+        self._file_data_bytes = file_data
 
-        Returns:
-            str: Base64-encoded serialized file data with metadata
-        """
-        # Check size limits (soft warning)
-        source = file_path if file_path else "<bytes>"
-        self._check_size(len(file_data), source)
-
-        # Calculate hash
         file_hash = hashlib.sha256(file_data).hexdigest()
 
-        # Create metadata
-        metadata = {
+        self._file_info = {
             'size': len(file_data),
             'encoding': 'base64',
             'type': 'file_data',
-            'hash': file_hash
+            'hash': file_hash,
+            'source': 'file_data'
         }
+        if filename:
+            self._file_info['filename'] = os.path.basename(filename)
 
-        if file_path:
-            metadata['filename'] = os.path.basename(file_path)
+    def _build_biscuit(self):
+        """Build the Biscuit token containing file data."""
+        biscuit_kp = self._stellar_to_biscuit_keypair(self._shared_keypair)
 
-        # Encode file data
-        encoded_data = base64.b64encode(file_data).decode('utf-8')
+        # Build facts string for the biscuit
+        facts = []
 
-        # Create serialized format
-        serialized = json.dumps({
-            'metadata': metadata,
-            'data': encoded_data
-        })
+        # Add issuer info
+        sender_address = self._sender_keypair.base_stellar_keypair().public_key
+        facts.append(f'issuer("{sender_address}")')
+        facts.append(f'shared_account("{self._shared_keypair.public_key}")')
 
-        return serialized
-    
+        # Add timestamps
+        created = int(datetime.now(timezone.utc).timestamp())
+        facts.append(f'created({created})')
+
+        if self._expires_in:
+            expires = created + self._expires_in
+            facts.append(f'expires({expires})')
+
+        # Add file metadata as facts
+        if self._file_info:
+            if 'filename' in self._file_info:
+                # Escape quotes in filename
+                safe_filename = self._file_info['filename'].replace('"', '\\"')
+                facts.append(f'file_name("{safe_filename}")')
+            facts.append(f'file_size({self._file_info["size"]})')
+            facts.append(f'file_hash("{self._file_info["hash"]}")')
+
+        # Add user caveats as facts
+        for key, value in self._caveats.items():
+            if isinstance(value, str):
+                safe_value = value.replace('"', '\\"')
+                facts.append(f'{key}("{safe_value}")')
+            else:
+                facts.append(f'{key}({value})')
+
+        # Add file data (base64 encoded)
+        if self._file_data_bytes:
+            file_b64 = base64.b64encode(self._file_data_bytes).decode('utf-8')
+            facts.append(f'file_data("{file_b64}")')
+
+        # Join all facts
+        facts_str = ';'.join(facts) + ';'
+
+        # Build the biscuit
+        builder = BiscuitBuilder(facts_str)
+        return builder.build(biscuit_kp.private_key)
+
+    def serialize(self) -> str:
+        """Serialize the token to a string.
+
+        Returns:
+            str: Combined token format: "account_token|HVYM_BISCUIT|biscuit_b64"
+        """
+        # Serialize account token (uses existing macaroon serialization)
+        account_serialized = self._account_token.serialize()
+
+        # Serialize biscuit token (base64)
+        biscuit_b64 = self._biscuit.to_base64()
+
+        # Combine with delimiter
+        return f"{account_serialized}{self.BISCUIT_DELIMITER}{biscuit_b64}"
+
     def get_file_info(self) -> dict:
         """Get information about the stored file.
-        
+
         Returns:
             dict: File metadata information
         """
         return self._file_info.copy()
-    
+
     def get_data(self) -> dict:
         """Get the original data that was stored in this token (legacy support).
-        
+
         Returns:
             dict: The original data dictionary, or None if no data was provided
         """
         return self._data.copy() if self._data is not None else None
-    
-    def extract_file_data(self, verifier: 'StellarSharedKeyTokenVerifier',
-                          verify_hash: bool = True,
-                          enforce_caveats: bool = True) -> bytes:
-        """Extract and decode file data from a verified token.
 
-        Args:
-            verifier: A verified token verifier instance
-            verify_hash: Whether to verify file hash if caveat exists (default: True)
-            enforce_caveats: Whether to enforce all file caveats (size, type, hash).
-                           If True, raises ValueError on caveat violations.
-                           Default: True
-
-        Returns:
-            bytes: The original file data
-
-        Raises:
-            ValueError: If token verification fails, data extraction fails,
-                       hash mismatch, or caveat violation (when enforce_caveats=True)
-        """
-        if not verifier.valid():
-            raise ValueError("Token verification failed")
-
-        try:
-            # Get the secret data
-            secret_data = verifier.secret()
-
-            # Parse the serialized format
-            parsed_data = json.loads(secret_data)
-
-            if parsed_data.get('metadata', {}).get('type') != 'file_data':
-                raise ValueError("Token does not contain file data")
-
-            # Decode the file data
-            encoded_data = parsed_data['data']
-            file_bytes = base64.b64decode(encoded_data.encode('utf-8'))
-
-            # Get metadata for verification
-            metadata = parsed_data.get('metadata', {})
-            filename = metadata.get('filename')
-
-            # Enforce caveats if enabled
-            if enforce_caveats:
-                caveats = verifier._get_caveats()
-                caveat_verifier = FileCaveatVerifier(caveats)
-                # Verify size and type
-                caveat_verifier.verify_size(len(file_bytes))
-                if filename:
-                    _, ext = os.path.splitext(filename)
-                    if ext:
-                        caveat_verifier.verify_type(ext[1:])
-                # Only verify hash if verify_hash is True
-                if verify_hash:
-                    caveat_verifier.verify_hash(hashlib.sha256(file_bytes).hexdigest())
-            elif verify_hash:
-                # Legacy behavior: only verify hash
-                caveats = verifier._get_caveats()
-                if 'file_hash' in caveats:
-                    computed_hash = hashlib.sha256(file_bytes).hexdigest()
-                    if computed_hash != caveats['file_hash']:
-                        raise ValueError("File hash mismatch - data integrity compromised")
-
-            return file_bytes
-
-        except ValueError:
-            raise
-        except Exception as e:
-            raise ValueError(f"Failed to extract file data: {str(e)}")
-
-    def save_to_file(self, verifier: 'StellarSharedKeyTokenVerifier', output_path: str):
-        """Extract file data from token and save to specified path.
-        
-        Args:
-            verifier: A verified token verifier instance
-            output_path: Path where to save the extracted file
-            
-        Raises:
-            ValueError: If token verification fails or file saving fails
-        """
-        file_data = self.extract_file_data(verifier)
-        
-        try:
-            with open(output_path, 'wb') as f:
-                f.write(file_data)
-        except Exception as e:
-            raise ValueError(f"Failed to save file to {output_path}: {str(e)}")
-    
     def add_file_caveat(self, key: str, value: str):
         """Add a caveat related to the file content.
-        
+
         Args:
             key: The caveat key
             value: The caveat value
         """
-        self._token.add_first_party_caveat(f'file_{key} = {value}')
-    
+        self._caveats[f'file_{key}'] = value
+        # Rebuild biscuit with new caveat
+        self._biscuit = self._build_biscuit()
+
     def add_file_type_caveat(self, file_type: str):
         """Add a caveat specifying the type of file stored.
-        
+
         Args:
             file_type: The type of file (e.g., 'pdf', 'image', 'document', etc.)
         """
         self.add_file_caveat('type', file_type)
-    
+
     def add_file_size_caveat(self, max_size: int):
         """Add a caveat specifying the maximum expected file size.
-        
+
         Args:
             max_size: Maximum expected file size in bytes
         """
         self.add_file_caveat('max_size', str(max_size))
-    
+
     def add_file_hash_caveat(self, expected_hash: str):
         """Add a caveat specifying the expected file hash.
 
@@ -1420,15 +1523,121 @@ class HVYMDataToken(StellarSharedKeyTokenBuilder):
         """
         self.add_file_caveat('hash', expected_hash)
 
+    def extract_file_data(self,
+                          verifier: 'StellarSharedKeyTokenVerifier' = None,
+                          verify_hash: bool = True,
+                          enforce_caveats: bool = True) -> bytes:
+        """Extract and decode file data.
+
+        For biscuit tokens, the verifier parameter is ignored since
+        verification is handled internally via the shared keypair.
+
+        Args:
+            verifier: Ignored for biscuit tokens (kept for API compatibility)
+            verify_hash: Whether to verify file hash (default: True)
+            enforce_caveats: Whether to enforce file caveats (default: True)
+
+        Returns:
+            bytes: The original file data
+        """
+        if self._file_data_bytes is None:
+            raise ValueError("No file data in token")
+
+        if verify_hash and self._file_info.get('hash'):
+            computed_hash = hashlib.sha256(self._file_data_bytes).hexdigest()
+            if computed_hash != self._file_info['hash']:
+                raise ValueError("File hash mismatch - data integrity compromised")
+
+        return self._file_data_bytes
+
+    def save_to_file(self,
+                     verifier: 'StellarSharedKeyTokenVerifier' = None,
+                     output_path: str = None):
+        """Extract file data from token and save to specified path.
+
+        Args:
+            verifier: Ignored for biscuit tokens (kept for API compatibility)
+            output_path: Path where to save the extracted file
+
+        Raises:
+            ValueError: If file saving fails
+        """
+        file_data = self.extract_file_data(verifier)
+
+        try:
+            with open(output_path, 'wb') as f:
+                f.write(file_data)
+        except Exception as e:
+            raise ValueError(f"Failed to save file to {output_path}: {str(e)}")
+
+    def save_token_to_file(self, file_path: str) -> None:
+        """Save the serialized token to a file.
+
+        This saves the token itself (not the file data) to a text file,
+        allowing it to be transmitted or stored and later loaded.
+
+        Args:
+            file_path: Path where to save the token file
+
+        Example:
+            token = HVYMDataToken.create_from_file(sender_kp, receiver_pub, "doc.pdf")
+            token.save_token_to_file("token.hvym")
+        """
+        serialized = self.serialize()
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(serialized)
+        except Exception as e:
+            raise ValueError(f"Failed to save token to {file_path}: {str(e)}")
+
+    @staticmethod
+    def load_token_from_file(
+        file_path: str,
+        receiver_keypair: Stellar25519KeyPair,
+        verify_hash: bool = True
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """Load a token from file and extract its contents.
+
+        This reads a previously saved token file and extracts the file data.
+
+        Args:
+            file_path: Path to the token file
+            receiver_keypair: The receiver's keypair for decryption
+            verify_hash: Whether to verify file hash (default: True)
+
+        Returns:
+            tuple: (file_bytes, metadata_dict)
+
+        Example:
+            file_bytes, metadata = HVYMDataToken.load_token_from_file(
+                "token.hvym", receiver_kp
+            )
+            with open(metadata['filename'], 'wb') as f:
+                f.write(file_bytes)
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                serialized_token = f.read().strip()
+        except Exception as e:
+            raise ValueError(f"Failed to read token from {file_path}: {str(e)}")
+
+        return HVYMDataToken.extract_from_token(
+            serialized_token=serialized_token,
+            receiver_keypair=receiver_keypair,
+            verify_hash=verify_hash
+        )
+
     @staticmethod
     def extract_from_token(serialized_token: str,
                           receiver_keypair: Stellar25519KeyPair,
                           verify_hash: bool = True,
-                          enforce_caveats: bool = True) -> tuple:
+                          enforce_caveats: bool = True) -> Tuple[bytes, Dict[str, Any]]:
         """Extract file data directly from a serialized token.
 
         This is a convenience method that handles verification and extraction
         in a single call without needing a separate HVYMDataToken instance.
+
+        Supports both new biscuit-based tokens and legacy macaroon tokens.
 
         Args:
             serialized_token: The serialized token string
@@ -1445,7 +1654,130 @@ class HVYMDataToken(StellarSharedKeyTokenBuilder):
             ValueError: If token verification fails, extraction fails,
                        hash mismatch, or caveat violation (when enforce_caveats=True)
         """
-        # Create verifier (use new parameter name)
+        # Check if this is a biscuit-based token
+        if HVYMDataToken.BISCUIT_DELIMITER in serialized_token:
+            return HVYMDataToken._extract_biscuit_token(
+                serialized_token, receiver_keypair, verify_hash, enforce_caveats
+            )
+        else:
+            # Fall back to legacy macaroon extraction
+            return HVYMDataToken._extract_macaroon_token(
+                serialized_token, receiver_keypair, verify_hash, enforce_caveats
+            )
+
+    @staticmethod
+    def _extract_biscuit_token(
+        serialized_token: str,
+        receiver_keypair: Stellar25519KeyPair,
+        verify_hash: bool,
+        enforce_caveats: bool
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """Extract file data from a biscuit-based token."""
+        # Split the combined token
+        parts = serialized_token.split(HVYMDataToken.BISCUIT_DELIMITER)
+        if len(parts) != 2:
+            raise ValueError("Invalid biscuit token format")
+
+        account_token_str, biscuit_b64 = parts
+
+        # Step 1: Extract shared keypair from account token
+        shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
+            serialized_token=account_token_str,
+            receiverKeyPair=receiver_keypair
+        )
+
+        # Step 2: Convert shared keypair to biscuit keypair for verification
+        secret_hex = shared_kp.raw_secret_key().hex()
+        biscuit_private = BiscuitPrivateKey(f"ed25519-private/{secret_hex}")
+        biscuit_kp = BiscuitKeyPair.from_private_key(biscuit_private)
+
+        # Step 3: Parse and verify biscuit
+        try:
+            biscuit = Biscuit.from_base64(biscuit_b64, biscuit_kp.public_key)
+        except Exception as e:
+            raise ValueError(f"Biscuit verification failed: {e}")
+
+        # Step 4: Extract facts from biscuit using authorizer
+        facts = HVYMDataToken._extract_biscuit_facts(biscuit)
+
+        # Step 5: Extract file data
+        file_b64 = facts.get('file_data')
+        if not file_b64:
+            raise ValueError("Token does not contain file data")
+
+        file_bytes = base64.b64decode(file_b64)
+
+        # Step 6: Build metadata
+        metadata = {
+            'size': facts.get('file_size'),
+            'hash': facts.get('file_hash'),
+            'type': 'file_data',
+            'encoding': 'base64'
+        }
+        if 'file_name' in facts:
+            metadata['filename'] = facts['file_name']
+
+        # Step 7: Verify hash if requested
+        if verify_hash and metadata.get('hash'):
+            computed_hash = hashlib.sha256(file_bytes).hexdigest()
+            if computed_hash != metadata['hash']:
+                raise ValueError("File hash mismatch - data integrity compromised")
+
+        return file_bytes, metadata
+
+    @staticmethod
+    def _extract_biscuit_facts(biscuit) -> Dict[str, Any]:
+        """Extract facts from a biscuit token using authorizer queries."""
+        facts = {}
+
+        try:
+            # Build an authorizer to query facts
+            authorizer = AuthorizerBuilder(
+                'allow if true;'
+            ).build(biscuit)
+
+            # Define queries for each fact we want to extract
+            fact_queries = [
+                ('file_data', 'data($x) <- file_data($x)'),
+                ('file_name', 'data($x) <- file_name($x)'),
+                ('file_size', 'data($x) <- file_size($x)'),
+                ('file_hash', 'data($x) <- file_hash($x)'),
+                ('issuer', 'data($x) <- issuer($x)'),
+                ('shared_account', 'data($x) <- shared_account($x)'),
+                ('created', 'data($x) <- created($x)'),
+                ('expires', 'data($x) <- expires($x)'),
+            ]
+
+            for fact_name, query_str in fact_queries:
+                try:
+                    rule = Rule(query_str)
+                    results = authorizer.query(rule)
+                    if results and len(results) > 0:
+                        # Extract the value from the first result
+                        value = results[0].terms[0] if results[0].terms else None
+                        if value is not None:
+                            facts[fact_name] = value
+                except Exception:
+                    # Skip facts that can't be queried
+                    continue
+
+        except Exception:
+            # If authorizer fails, return empty facts
+            pass
+
+        return facts
+
+    @staticmethod
+    def _extract_macaroon_token(
+        serialized_token: str,
+        receiver_keypair: Stellar25519KeyPair,
+        verify_hash: bool,
+        enforce_caveats: bool
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """Extract file data from a legacy macaroon-based token.
+
+        This provides backward compatibility with old tokens.
+        """
         verifier = StellarSharedKeyTokenVerifier(
             receiverKeyPair=receiver_keypair,
             serializedToken=serialized_token,

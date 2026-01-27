@@ -10,3 +10,7 @@ __pycache__/
 test_files/test_txt_files/
 
 test_files/test_img_files/
+
+test_files/test_audio_files/
+
+biscuit-python-main/

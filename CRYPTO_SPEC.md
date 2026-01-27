@@ -1,7 +1,7 @@
 # hvym_stellar Cryptographic Specification
 
-> **Version**: 1.0
-> **Last Updated**: 2026-01-25
+> **Version**: 2.0
+> **Last Updated**: 2026-01-26
 
 This document provides a formal specification of the cryptographic schemes used in hvym_stellar.
 
@@ -14,8 +14,9 @@ This document provides a formal specification of the cryptographic schemes used 
 3. [Hybrid Encryption Scheme](#3-hybrid-encryption-scheme)
 4. [Asymmetric Encryption Scheme](#4-asymmetric-encryption-scheme)
 5. [Token System](#5-token-system)
-6. [Security Properties](#6-security-properties)
-7. [Comparison with Standards](#7-comparison-with-standards)
+6. [Biscuit Data Token System](#6-biscuit-data-token-system)
+7. [Security Properties](#7-security-properties)
+8. [Comparison with Standards](#8-comparison-with-standards)
 
 ---
 
@@ -27,7 +28,8 @@ hvym_stellar provides cryptographic operations built on Stellar keypairs using N
 - **Signatures**: Ed25519
 - **Authenticated Encryption**: XSalsa20-Poly1305 (NaCl Box)
 - **Key Derivation**: SHA-256 with domain separation
-- **Tokens**: Macaroons with HMAC-SHA256
+- **Access Tokens**: Macaroons with HMAC-SHA256
+- **Data Tokens**: Biscuit tokens with Ed25519 (for large file storage)
 
 ---
 
@@ -235,9 +237,162 @@ This detects modifications to the base64 string representation that might not be
 
 ---
 
-## 6. Security Properties
+## 6. Biscuit Data Token System
 
-### 6.1 Encryption Properties
+HVYMDataToken uses Biscuit tokens for file storage, removing the 16KB size limitation of macaroons.
+
+### 6.1 Shared Account Token Pattern
+
+The key innovation is the **Shared Account Token** pattern, which enables both sender and receiver to use the same signing keypair:
+
+```
+Sender                                              Receiver
+------                                              --------
+1. shared_kp = Keypair.random()
+2. Encrypt shared_kp.secret via DH(sender, receiver)
+3. Create biscuit signed with shared_kp
+                        ─────────────────────────────►
+                        [account_token, biscuit_token]
+                                                    4. Decrypt shared_kp from account_token
+                                                    5. Verify biscuit with shared_kp
+                                                    6. Extract file data
+```
+
+### 6.2 StellarSharedAccountTokenBuilder
+
+Creates a macaroon-based token containing an encrypted shared keypair:
+
+```
+Input:
+  - sender_keypair (sk_s, pk_s)
+  - receiver_pubkey pk_r
+  - expires_in (optional)
+
+Process:
+  1. Generate random shared keypair: shared_kp = Keypair.random()
+  2. Encode secret: secret_hex = shared_kp.raw_secret_key().hex()
+  3. Create SECRET token with encrypted secret_hex
+  4. Add caveats: token_type=shared_account, shared_pub=shared_kp.public_key
+
+Output: Macaroon token with encrypted shared keypair
+```
+
+### 6.3 Biscuit Token Structure
+
+```
++-------------------------+
+| Biscuit Token           |
+|  - Authority Block      |
+|    - issuer(sender_pub) |
+|    - shared_account(G..)|
+|    - created(timestamp) |
+|    - expires(timestamp) |
+|    - file_name(...)     |
+|    - file_size(...)     |
+|    - file_hash(...)     |
+|    - file_data(base64)  |
+|  - Ed25519 Signature    |  Signed by shared_keypair
++-------------------------+
+```
+
+### 6.4 Combined Token Format
+
+HVYMDataToken serializes as a combined format:
+
+```
++------------------+------------------+------------------+
+| account_token    | DELIMITER        | biscuit_b64      |
+| (macaroon)       | |HVYM_BISCUIT|   | (base64)         |
++------------------+------------------+------------------+
+```
+
+Example:
+```
+MDAxNGxvY2F0aW9uI...|23abc123|HVYM_BISCUIT|En0KEwoEZmlsZRI...
+```
+
+### 6.5 Key Exchange Process
+
+**Sender (Token Creation):**
+```
+1. account_token = StellarSharedAccountTokenBuilder(
+       senderKeyPair, receiverPub, expires_in
+   )
+   └─► Internally: shared_kp = Keypair.random()
+
+2. shared_kp = account_token.shared_keypair
+
+3. biscuit = BiscuitBuilder(facts).build(shared_kp.private_key)
+
+4. output = account_token.serialize() + DELIMITER + biscuit.to_base64()
+```
+
+**Receiver (Token Extraction):**
+```
+1. Split token by DELIMITER → [account_token, biscuit_b64]
+
+2. shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
+       account_token, receiverKeyPair
+   )
+   └─► Decrypts shared secret using DH(receiver, sender)
+   └─► Reconstructs Keypair from secret
+
+3. biscuit = Biscuit.from_base64(biscuit_b64, shared_kp.public_key)
+   └─► Verifies Ed25519 signature
+
+4. Extract file_data fact from biscuit
+```
+
+### 6.6 Stellar to Biscuit Key Conversion
+
+Both Stellar and Biscuit use Ed25519:
+
+```python
+# Stellar keypair to Biscuit keypair
+secret_hex = stellar_kp.raw_secret_key().hex()
+biscuit_private = PrivateKey(f"ed25519-private/{secret_hex}")
+biscuit_kp = KeyPair.from_private_key(biscuit_private)
+
+# The Ed25519 keys are identical
+assert stellar_kp.public_key == biscuit_kp.public_key  # (modulo encoding)
+```
+
+### 6.7 Biscuit Fact Schema
+
+```datalog
+// Token metadata
+issuer($stellar_address)        // Sender's Stellar G... address
+shared_account($stellar_addr)   // Shared keypair's G... address
+created($timestamp)             // Unix timestamp
+expires($timestamp)             // Expiration timestamp
+
+// File metadata
+file_name($name)                // Original filename
+file_size($bytes)               // File size in bytes
+file_hash($sha256_hex)          // SHA-256 hash
+
+// File content
+file_data($base64_content)      // Base64-encoded file data
+```
+
+### 6.8 Backward Compatibility
+
+HVYMDataToken.extract_from_token() auto-detects token format:
+
+```python
+if "|HVYM_BISCUIT|" in token:
+    # New biscuit format
+    return _extract_biscuit_token(token, receiver_kp)
+else:
+    # Legacy macaroon format
+    return _extract_macaroon_token(token, receiver_kp)
+```
+
+---
+
+## 7. Security Properties
+
+### 7.1 Encryption Properties
 
 | Property | Hybrid | Asymmetric |
 |----------|--------|------------|
@@ -247,16 +402,28 @@ This detects modifications to the base64 string representation that might not be
 | Forward Secrecy | No (static keys) | No (static keys) |
 | Replay Protection | Partial (random nonce) | Partial (random nonce) |
 
-### 6.2 Token Properties
+### 7.2 Token Properties
 
-| Property | Status |
-|----------|--------|
-| Unforgeable | Yes (HMAC-SHA256) |
-| Attenuable | Yes (first-party caveats) |
-| Delegatable | Limited (no third-party caveats) |
-| Tamper-evident | Yes (HMAC + checksum) |
+| Property | Macaroons | Biscuits |
+|----------|-----------|----------|
+| Unforgeable | Yes (HMAC-SHA256) | Yes (Ed25519) |
+| Attenuable | Yes (first-party caveats) | Yes (blocks) |
+| Delegatable | Limited | Yes (attenuation) |
+| Tamper-evident | Yes (HMAC + checksum) | Yes (signature) |
+| Max Payload | ~16KB | Unlimited |
 
-### 6.3 Threat Model
+### 7.3 Biscuit Data Token Security
+
+| Property | Mechanism |
+|----------|-----------|
+| Key Confidentiality | Shared keypair encrypted via X25519 ECDH + XSalsa20-Poly1305 |
+| Key Integrity | Poly1305 MAC on encrypted shared keypair |
+| Sender Authentication | Ed25519 signature in account token (hybrid mode) |
+| File Authenticity | Ed25519 signature on biscuit (shared keypair) |
+| File Integrity | SHA-256 hash stored in biscuit facts |
+| Replay Protection | Expiration timestamps in both tokens |
+
+### 7.4 Threat Model
 
 **Protected against:**
 - Passive eavesdropping
@@ -273,9 +440,9 @@ This detects modifications to the base64 string representation that might not be
 
 ---
 
-## 7. Comparison with Standards
+## 8. Comparison with Standards
 
-### 7.1 vs HPKE (RFC 9180)
+### 8.1 vs HPKE (RFC 9180)
 
 | Aspect | hvym_stellar | HPKE |
 |--------|--------------|------|
@@ -285,7 +452,7 @@ This detects modifications to the base64 string representation that might not be
 | Auth | Ed25519 signature | AuthPSK mode |
 | Standard | No | Yes (RFC 9180) |
 
-### 7.2 vs NaCl Box
+### 8.2 vs NaCl Box
 
 | Aspect | hvym_stellar Hybrid | Standard NaCl Box |
 |--------|---------------------|-------------------|
@@ -293,13 +460,23 @@ This detects modifications to the base64 string representation that might not be
 | Authentication | Ed25519 signature | None (anonymous) |
 | Sender identity | Verifiable | Not verifiable |
 
-### 7.3 vs ECIES
+### 8.3 vs ECIES
 
 | Aspect | hvym_stellar | ECIES |
 |--------|--------------|-------|
 | Ephemeral keys | No | Yes |
 | Forward secrecy | No | Yes |
 | Standard | No | IEEE P1363a |
+
+### 8.4 vs Macaroons for Data Storage
+
+| Aspect | HVYMDataToken (Biscuit) | Pure Macaroons |
+|--------|-------------------------|----------------|
+| Max payload | Unlimited | ~16KB |
+| Signing | Ed25519 | HMAC-SHA256 |
+| Key sharing | Shared account pattern | N/A |
+| Authorization | Datalog | Simple caveats |
+| Standard | biscuit-auth | macaroons |
 
 ---
 
