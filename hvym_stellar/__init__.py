@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.20.0"
+__version__ = "0.21.0"
 
 import nacl
 from nacl import utils, secret
@@ -16,9 +16,10 @@ import os
 import json
 from enum import Enum
 import hmac
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 import warnings
 from datetime import datetime, timedelta, timezone
+import struct
 
 # Optional biscuit support for large file tokens
 try:
@@ -558,9 +559,9 @@ class StellarSharedDecryption(StellarKeyBase):
             sender_verify_key = sender_keypair.verify_key
 
             # Verify the signature of salt + nonce
-            message_to_verify = salt + nonce
+            message = salt + nonce
             try:
-                sender_verify_key.verify(message_to_verify, signature)
+                sender_verify_key.verify(message, signature)
             except Exception as e:
                 raise ValueError(f"Signature verification failed: {str(e)}")
 
@@ -1260,6 +1261,14 @@ class HVYMDataToken:
         )
     """
 
+    # File format constants
+    HVYM_EXTENSION = '.hvym'
+    HVYM_MAGIC_BYTES = b'HVYMTOKN'
+    HVYM_FORMAT_VERSION = (1, 0)
+    
+    # For backward compatibility with plain-text token files
+    LEGACY_FORMAT_SUPPORT = True
+
     # Size limits (increased since biscuits don't have macaroon's 16KB limit)
     MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB soft limit (warning)
     WARN_FILE_SIZE = 50 * 1024 * 1024  # 50 MB warning threshold
@@ -1472,6 +1481,93 @@ class HVYMDataToken:
         # Combine with delimiter
         return f"{account_serialized}{self.BISCUIT_DELIMITER}{biscuit_b64}"
 
+    def _write_hvym_header(self, file_handle) -> None:
+        """Write HVYM file format header to file handle.
+        
+        Args:
+            file_handle: File handle opened in binary write mode
+        """
+        # Create JSON header metadata
+        header_data = {
+            "version": f"{self.HVYM_FORMAT_VERSION[0]}.{self.HVYM_FORMAT_VERSION[1]}",
+            "created_at": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            "original_filename": self._file_info.get('filename', 'unknown'),
+            "file_size": self._file_info.get('size', 0),
+            "file_hash": self._file_info.get('hash', ''),
+            "token_type": "biscuit"
+        }
+        
+        # Serialize header to JSON
+        json_header = json.dumps(header_data, separators=(',', ':')).encode('utf-8')
+        
+        # Write binary header
+        file_handle.write(self.HVYM_MAGIC_BYTES)  # 8 bytes
+        file_handle.write(struct.pack('<H', self.HVYM_FORMAT_VERSION[0]))  # Version major
+        file_handle.write(struct.pack('<H', self.HVYM_FORMAT_VERSION[1]))  # Version minor
+        file_handle.write(struct.pack('<H', 0))  # Flags (reserved)
+        file_handle.write(struct.pack('<I', len(json_header)))  # Header length
+        file_handle.write(json_header)  # JSON header
+
+    @staticmethod
+    def _read_hvym_header(file_handle) -> Dict[str, Any]:
+        """Read HVYM file format header from file handle.
+        
+        Args:
+            file_handle: File handle opened in binary read mode
+            
+        Returns:
+            Dict containing header metadata
+            
+        Raises:
+            ValueError: If file format is invalid
+        """
+        # Read and verify magic bytes
+        magic_bytes = file_handle.read(8)
+        if magic_bytes != HVYMDataToken.HVYM_MAGIC_BYTES:
+            raise ValueError("Invalid HVYM file format: magic bytes mismatch")
+        
+        # Read version
+        version_major = struct.unpack('<H', file_handle.read(2))[0]
+        version_minor = struct.unpack('<H', file_handle.read(2))[0]
+        
+        # Read flags (reserved for future use)
+        flags = struct.unpack('<H', file_handle.read(2))[0]
+        
+        # Read header length
+        header_length = struct.unpack('<I', file_handle.read(4))[0]
+        
+        # Read and parse JSON header
+        json_header = file_handle.read(header_length).decode('utf-8')
+        try:
+            header_data = json.loads(json_header)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid HVYM header JSON: {e}")
+        
+        # Validate required fields
+        required_fields = ['version', 'created_at', 'original_filename', 'file_size', 'file_hash', 'token_type']
+        for field in required_fields:
+            if field not in header_data:
+                raise ValueError(f"Missing required field in HVYM header: {field}")
+        
+        return header_data
+
+    @staticmethod
+    def _is_hvym_format(file_path: str) -> bool:
+        """Check if file is in HVYM format by checking magic bytes.
+        
+        Args:
+            file_path: Path to the file to check
+            
+        Returns:
+            True if file has HVYM magic bytes, False otherwise
+        """
+        try:
+            with open(file_path, 'rb') as f:
+                magic_bytes = f.read(8)
+                return magic_bytes == HVYMDataToken.HVYM_MAGIC_BYTES
+        except (IOError, OSError):
+            return False
+
     def get_file_info(self) -> dict:
         """Get information about the stored file.
 
@@ -1590,6 +1686,49 @@ class HVYMDataToken:
         except Exception as e:
             raise ValueError(f"Failed to save token to {file_path}: {str(e)}")
 
+    def to_hvym_file(self, path: str, auto_extension: bool = True) -> str:
+        """Save the token to a .hvym file with proper format header.
+
+        Args:
+            path: Output file path
+            auto_extension: If True, automatically append .hvym if not present
+
+        Returns:
+            The actual path where the file was saved
+
+        Example:
+            token = HVYMDataToken.create_from_file(sender_kp, receiver_pub, "doc.pdf")
+            saved_path = token.to_hvym_file("my_token")  # Creates "my_token.hvym"
+        """
+        # Auto-append extension if needed
+        if auto_extension and not path.endswith(self.HVYM_EXTENSION):
+            path = path + self.HVYM_EXTENSION
+        
+        # Validate write permissions by attempting to open the file
+        try:
+            # Check if directory exists and is writable
+            dir_path = os.path.dirname(path) or '.'
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path, exist_ok=True)
+            if not os.access(dir_path, os.W_OK):
+                raise ValueError(f"Directory {dir_path} is not writable")
+        except OSError as e:
+            raise ValueError(f"Cannot write to {path}: {str(e)}")
+        
+        try:
+            with open(path, 'wb') as f:
+                # Write HVYM format header
+                self._write_hvym_header(f)
+                
+                # Write serialized token data
+                serialized_token = self.serialize()
+                f.write(serialized_token.encode('utf-8'))
+                
+        except Exception as e:
+            raise ValueError(f"Failed to save HVYM file to {path}: {str(e)}")
+        
+        return path
+
     @staticmethod
     def load_token_from_file(
         file_path: str,
@@ -1664,6 +1803,273 @@ class HVYMDataToken:
             return HVYMDataToken._extract_macaroon_token(
                 serialized_token, receiver_keypair, verify_hash, enforce_caveats
             )
+
+    @staticmethod
+    def from_hvym_file(
+        path: str,
+        receiver_keypair: Stellar25519KeyPair,
+        verify_hash: bool = True
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """Load and decrypt data from a .hvym token file.
+
+        Args:
+            path: Path to the .hvym file
+            receiver_keypair: Keypair for decryption
+            verify_hash: Whether to verify file integrity
+
+        Returns:
+            Tuple of (file_bytes, metadata_dict)
+
+        Raises:
+            ValueError: If file is not a valid .hvym format
+
+        Example:
+            data, meta = HVYMDataToken.from_hvym_file("my_token.hvym", receiver_kp)
+            with open(meta['filename'], 'wb') as f:
+                f.write(data)
+        """
+        if not os.path.exists(path):
+            raise ValueError(f"File not found: {path}")
+        
+        try:
+            with open(path, 'rb') as f:
+                # Check if this is a HVYM format file
+                if HVYMDataToken._is_hvym_format(path):
+                    # Read HVYM header
+                    header_metadata = HVYMDataToken._read_hvym_header(f)
+                    
+                    # Read the serialized token data
+                    serialized_token = f.read().decode('utf-8').strip()
+                    
+                    # Extract file data using existing method
+                    file_bytes, token_metadata = HVYMDataToken.extract_from_token(
+                        serialized_token=serialized_token,
+                        receiver_keypair=receiver_keypair,
+                        verify_hash=verify_hash
+                    )
+                    
+                    # Merge header metadata with token metadata
+                    combined_metadata = token_metadata.copy()
+                    combined_metadata.update({
+                        'original_filename': header_metadata.get('original_filename'),
+                        'file_size': header_metadata.get('file_size'),
+                        'file_hash': header_metadata.get('file_hash'),
+                        'created_at': header_metadata.get('created_at'),
+                        'version': header_metadata.get('version'),
+                        'token_type': header_metadata.get('token_type')
+                    })
+                    
+                    # Use filename from header if available, otherwise from token
+                    if header_metadata.get('original_filename') and header_metadata.get('original_filename') != 'unknown':
+                        combined_metadata['filename'] = header_metadata['original_filename']
+                    
+                    return file_bytes, combined_metadata
+                else:
+                    # Legacy format: treat as plain text token file
+                    if not HVYMDataToken.LEGACY_FORMAT_SUPPORT:
+                        raise ValueError("Legacy format support is disabled")
+                    
+                    # Read as plain text token
+                    with open(path, 'r', encoding='utf-8') as text_f:
+                        serialized_token = text_f.read().strip()
+                    
+                    # Extract using existing method
+                    file_bytes, metadata = HVYMDataToken.extract_from_token(
+                        serialized_token=serialized_token,
+                        receiver_keypair=receiver_keypair,
+                        verify_hash=verify_hash
+                    )
+                    
+                    # Add legacy format indicator
+                    metadata['format'] = 'legacy'
+                    return file_bytes, metadata
+                    
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Failed to load HVYM file from {path}: {str(e)}")
+
+    @staticmethod
+    def extract_to_file(
+        hvym_path: str,
+        receiver_keypair: Stellar25519KeyPair,
+        output_dir: str = None,
+        output_filename: str = None
+    ) -> str:
+        """Extract file data from .hvym token and save directly to disk.
+
+        Args:
+            hvym_path: Path to the .hvym token file
+            receiver_keypair: Keypair for decryption
+            output_dir: Directory to save the file (default: same as hvym file)
+            output_filename: Override the output filename (default: use original name)
+
+        Returns:
+            Path to the extracted file
+
+        Example:
+            # Extract to same directory with original filename
+            extracted = HVYMDataToken.extract_to_file("doc.hvym", receiver_kp)
+            print(f"Extracted: {extracted}")  # "document.pdf"
+
+            # Extract to specific directory
+            extracted = HVYMDataToken.extract_to_file("doc.hvym", receiver_kp, "/tmp")
+        """
+        # Extract file data and metadata
+        file_bytes, metadata = HVYMDataToken.from_hvym_file(
+            hvym_path, receiver_keypair, verify_hash=True
+        )
+        
+        # Determine output directory
+        if output_dir is None:
+            output_dir = os.path.dirname(os.path.abspath(hvym_path))
+        
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Determine output filename
+        if output_filename is None:
+            # Use filename from metadata, fallback to 'extracted_file'
+            output_filename = metadata.get('filename', 'extracted_file')
+        
+        # Construct full output path
+        output_path = os.path.join(output_dir, output_filename)
+        
+        # Handle filename conflicts by adding number suffix
+        counter = 1
+        base_path = output_path
+        while os.path.exists(output_path):
+            name, ext = os.path.splitext(base_path)
+            output_path = f"{name}_{counter}{ext}"
+            counter += 1
+        
+        # Write file to disk
+        try:
+            with open(output_path, 'wb') as f:
+                f.write(file_bytes)
+        except Exception as e:
+            raise ValueError(f"Failed to write extracted file to {output_path}: {str(e)}")
+        
+        return output_path
+
+    @staticmethod
+    def validate_hvym_file(path: str) -> Dict[str, Any]:
+        """Validate a .hvym file and return its header metadata.
+
+        This can be used to check if a file is valid without needing
+        the receiver's keypair for decryption.
+
+        Args:
+            path: Path to the .hvym file
+
+        Returns:
+            Dictionary with file metadata from header:
+            {
+                'valid': True,
+                'version': '1.0',
+                'created_at': '2024-01-15T10:30:00Z',
+                'original_filename': 'document.pdf',
+                'file_size': 102400,
+                'token_type': 'biscuit'
+            }
+
+        Raises:
+            ValueError: If file is not a valid .hvym format
+        """
+        if not os.path.exists(path):
+            raise ValueError(f"File not found: {path}")
+        
+        try:
+            with open(path, 'rb') as f:
+                # Check if this is a HVYM format file
+                if HVYMDataToken._is_hvym_format(path):
+                    # Read and validate header
+                    header_metadata = HVYMDataToken._read_hvym_header(f)
+                    
+                    # Return validation result with metadata
+                    return {
+                        'valid': True,
+                        'version': header_metadata.get('version'),
+                        'created_at': header_metadata.get('created_at'),
+                        'original_filename': header_metadata.get('original_filename'),
+                        'file_size': header_metadata.get('file_size'),
+                        'file_hash': header_metadata.get('file_hash'),
+                        'token_type': header_metadata.get('token_type'),
+                        'format': 'hvym'
+                    }
+                else:
+                    # Check if it's a legacy token file
+                    try:
+                        # First check if file is binary (contains null bytes or invalid UTF-8)
+                        with open(path, 'rb') as binary_f:
+                            chunk = binary_f.read(1024)
+                            if b'\x00' in chunk:  # Binary file detected
+                                return {
+                                    'valid': False,
+                                    'format': 'unknown',
+                                    'error': 'File appears to be binary but lacks HVYM magic bytes'
+                                }
+                        
+                        # Try to read as text
+                        with open(path, 'r', encoding='utf-8') as text_f:
+                            content = text_f.read().strip()
+                            if not content:
+                                raise ValueError("File is empty")
+                            
+                            # Basic validation for token content
+                            if len(content) < 10:  # Too short to be a valid token
+                                raise ValueError("Content too short")
+                            
+                            # Try to parse as token (basic validation)
+                            if HVYMDataToken.BISCUIT_DELIMITER in content:
+                                # New format token without header
+                                return {
+                                    'valid': True,
+                                    'format': 'legacy_biscuit',
+                                    'version': 'unknown',
+                                    'created_at': 'unknown',
+                                    'original_filename': 'unknown',
+                                    'file_size': 0,
+                                    'token_type': 'biscuit'
+                                }
+                            else:
+                                # Legacy macaroon token - additional validation
+                                if '|' in content and len(content) > 20:  # Basic macaroon format check
+                                    return {
+                                        'valid': True,
+                                        'format': 'legacy_macaroon',
+                                        'version': 'unknown',
+                                        'created_at': 'unknown',
+                                        'original_filename': 'unknown',
+                                        'file_size': 0,
+                                        'token_type': 'macaroon'
+                                    }
+                                else:
+                                    raise ValueError("Content doesn't match expected token format")
+                    except (UnicodeDecodeError, ValueError):
+                        # Not a valid token file
+                        pass
+                    except Exception:
+                        # Other errors - treat as invalid
+                        pass
+                    
+                    # If we get here, it's not a valid format
+                    return {
+                        'valid': False,
+                        'format': 'unknown',
+                        'error': 'File does not contain valid HVYM magic bytes or recognizable token format'
+                    }
+                    
+        except ValueError:
+            # Re-raise ValueError with context
+            raise
+        except Exception as e:
+            # Return validation failure with error info
+            return {
+                'valid': False,
+                'format': 'error',
+                'error': f'Validation failed: {str(e)}'
+            }
 
     @staticmethod
     def _extract_biscuit_token(
