@@ -4,10 +4,11 @@ A Python library for secure token generation and verification using Stellar keyp
 
 ## Features
 
-- **Access Tokens**: Macaroon-based tokens with caveats and expiration
+- **Access Tokens**: Macaroon-based tokens with caveats and optional expiration
 - **Secret Sharing**: Encrypted secret transmission between parties
 - **Encryption**: Hybrid (signature-based) and asymmetric (X25519) modes
 - **File Storage**: Biscuit-based tokens for files of any size (no 16KB limit)
+- **Flexible Expiration**: Tokens can expire after a set time or never expire
 - **Stellar Compatible**: Built on Ed25519/X25519 keys from Stellar SDK
 
 ## Installation
@@ -194,6 +195,50 @@ print(f"Extracted: {output_filename} ({metadata['size']} bytes)")
 
 This enables both sender and receiver to verify the token while supporting unlimited file sizes.
 
+### 6. Token Expiration
+
+All token types support optional expiration. By default, convenience methods use a 1-hour expiration, but you can create **non-expiring tokens** by setting `expires_in=None`.
+
+```python
+# Non-expiring access token
+token = StellarSharedKeyTokenBuilder(
+    sender_kp,
+    receiver_kp.public_key(),
+    token_type=TokenType.ACCESS,
+    expires_in=None,  # Never expires
+    caveats={"user_id": "123"}
+)
+
+# Non-expiring secret token
+token = StellarSharedKeyTokenBuilder(
+    sender_kp,
+    receiver_kp.public_key(),
+    token_type=TokenType.SECRET,
+    secret="permanent-secret",
+    expires_in=None  # Never expires
+)
+
+# Non-expiring data token (must override default)
+token = HVYMDataToken.create_from_bytes(
+    senderKeyPair=sender_kp,
+    receiverPub=receiver_kp.public_key(),
+    file_data=my_data,
+    filename="permanent.bin",
+    expires_in=None  # Override default 1-hour expiration
+)
+
+# Or use the constructor directly
+token = HVYMDataToken(
+    senderKeyPair=sender_kp,
+    receiverPub=receiver_kp.public_key(),
+    file_data=my_data,
+    filename="permanent.bin"
+    # expires_in defaults to None
+)
+```
+
+**Note:** The convenience methods `create_from_file()` and `create_from_bytes()` default to `expires_in=3600` (1 hour). To create non-expiring tokens with these methods, explicitly pass `expires_in=None`.
+
 ## API Reference
 
 ### StellarSharedKey
@@ -310,6 +355,7 @@ shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
 | Max Size | ~16KB | ~16KB | **Unlimited** |
 | Signing | HMAC-SHA256 | HMAC-SHA256 | Ed25519 |
 | File Storage | No | Limited | **Yes** |
+| Expiration | Optional | Optional | Optional (default: 1hr) |
 
 ## Security
 
