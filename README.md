@@ -8,6 +8,7 @@ A Python library for secure token generation and verification using Stellar keyp
 - **Secret Sharing**: Encrypted secret transmission between parties
 - **Encryption**: Hybrid (signature-based) and asymmetric (X25519) modes
 - **File Storage**: Biscuit-based tokens for files of any size (no 16KB limit)
+- **HVYM File Format**: Structured `.hvym` files with binary header + JSON metadata
 - **Flexible Expiration**: Tokens can expire after a set time or never expire
 - **Stellar Compatible**: Built on Ed25519/X25519 keys from Stellar SDK
 
@@ -187,6 +188,116 @@ with open(output_filename, 'wb') as f:
 print(f"Extracted: {output_filename} ({metadata['size']} bytes)")
 ```
 
+### 6. HVYM File Format (New in v0.21.0)
+
+The new `.hvym` file format provides a structured binary header with JSON metadata, making it easier to work with HVYM tokens as standalone files.
+
+```python
+# === CREATE HVYM FILE ===
+# Create a token and save it as a .hvym file
+token = HVYMDataToken.create_from_file(
+    senderKeyPair=sender_kp,
+    receiverPub=receiver_kp.public_key(),
+    file_path="important_document.pdf",
+    expires_in=86400
+)
+
+# Save as .hvym file (auto-adds .hvym extension if needed)
+hvym_path = token.to_hvym_file("secure_document")  # Creates "secure_document.hvym"
+print(f"HVYM file saved: {hvym_path}")
+
+# === LOAD HVYM FILE ===
+# Load token from .hvym file
+file_bytes, metadata = HVYMDataToken.from_hvym_file(
+    path="secure_document.hvym",
+    receiver_keypair=receiver_kp,
+    verify_hash=True  # Verify file integrity (default: True)
+)
+
+print(f"Extracted: {metadata['filename']}")
+print(f"Size: {metadata['file_size']} bytes")
+print(f"Created: {metadata['created_at']}")
+print(f"Format: {metadata['version']}")
+
+# === EXTRACT TO FILE ===
+# Convenience method to extract directly to a file
+extracted_path = HVYMDataToken.extract_to_file(
+    hvym_path="secure_document.hvym",
+    receiver_keypair=receiver_kp,
+    output_dir="./extracted_files"  # Optional: defaults to current directory
+)
+print(f"File extracted to: {extracted_path}")
+
+# === VALIDATE HVYM FILE ===
+# Validate a .hvym file without loading the full token
+validation_result = HVYMDataToken.validate_hvym_file("secure_document.hvym")
+
+if validation_result['valid']:
+    print(f"✅ Valid HVYM file")
+    print(f"   Format: {validation_result['format']}")
+    print(f"   Version: {validation_result['version']}")
+    print(f"   Filename: {validation_result['original_filename']}")
+    print(f"   Size: {validation_result['file_size']} bytes")
+    print(f"   Created: {validation_result['created_at']}")
+else:
+    print(f"❌ Invalid HVYM file: {validation_result.get('error', 'Unknown error')}")
+```
+
+#### HVYM File Format Structure
+
+The `.hvym` format consists of:
+
+```
+┌─────────────────────┐
+│ Magic Bytes (8)     │  "HVYMTOKN"
+├─────────────────────┤
+│ Version Major (2)   │  1
+├─────────────────────┤
+│ Version Minor (2)   │  0
+├─────────────────────┤
+│ Flags (2)           │  Reserved for future use
+├─────────────────────┤
+│ Header Length (4)   │  Length of JSON header
+├─────────────────────┤
+│ JSON Header (var)   │  Metadata in JSON format
+├─────────────────────┤
+│ Token Data (var)    │  Serialized HVYM token
+└─────────────────────┘
+```
+
+**JSON Header Fields:**
+- `version`: Format version (e.g., "1.0")
+- `created_at`: ISO timestamp when file was created
+- `original_filename`: Original filename from token
+- `file_size`: Size of the embedded file in bytes
+- `file_hash`: SHA-256 hash of the original file
+- `token_type`: Type of token (e.g., "biscuit")
+
+#### HVYM vs Legacy Token Files
+
+| Feature | Legacy (.hvym) | New (.hvym) Format |
+|---------|----------------|-------------------|
+| Header | None | Structured binary + JSON |
+| Metadata | In token only | In header + token |
+| Validation | Load entire file | Validate header only |
+| Auto-extension | Manual | Automatic |
+| Backward compatibility | ✅ | ✅ |
+| File validation | ❌ | ✅ |
+
+#### Migration from Legacy Files
+
+```python
+# Old way (still works)
+token.save_token_to_file("token.hvym")
+file_bytes, metadata = HVYMDataToken.load_token_from_file("token.hvym", receiver_kp)
+
+# New way (recommended)
+hvym_path = token.to_hvym_file("token")  # Auto-adds .hvym
+file_bytes, metadata = HVYMDataToken.from_hvym_file(hvym_path, receiver_kp)
+
+# Both methods are backward compatible!
+```
+
 **How it works internally:**
 1. A random shared keypair is generated
 2. The shared keypair is encrypted and sent via a macaroon (account token)
@@ -298,6 +409,16 @@ token = HVYMDataToken.create_from_bytes(senderKeyPair, receiverPub, file_data, f
 # Extraction (auto-detects biscuit vs legacy macaroon format)
 file_bytes, metadata = HVYMDataToken.extract_from_token(serialized_token, receiver_keypair)
 
+# HVYM File Format Methods (NEW in v0.21.0)
+hvym_path = token.to_hvym_file(path, auto_extension=True)  # Save as .hvym file
+file_bytes, metadata = HVYMDataToken.from_hvym_file(path, receiver_keypair, verify_hash=True)
+extracted_path = HVYMDataToken.extract_to_file(hvym_path, receiver_keypair, output_dir=None)
+validation_result = HVYMDataToken.validate_hvym_file(path)  # Validate without loading
+
+# Legacy File Methods (still supported)
+token.save_token_to_file("token.hvym")
+file_bytes, metadata = HVYMDataToken.load_token_from_file("token.hvym", receiver_kp)
+
 # Caveats (added as Biscuit facts)
 token.add_file_type_caveat("pdf")
 token.add_file_size_caveat(1048576)
@@ -305,10 +426,6 @@ token.add_file_hash_caveat("sha256_hash")
 
 # Get file info
 info = token.get_file_info()  # Returns dict with size, hash, filename, etc.
-
-# Save/Load tokens to/from files
-token.save_token_to_file("token.hvym")
-file_bytes, metadata = HVYMDataToken.load_token_from_file("token.hvym", receiver_kp)
 ```
 
 ### StellarSharedAccountTokenBuilder (Advanced)
@@ -366,6 +483,13 @@ shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
 
 ## Version History
 
+- **0.21.0**: HVYM File Format Support
+  - New `.hvym` file format with structured binary header + JSON metadata
+  - Added `to_hvym_file()`, `from_hvym_file()`, `extract_to_file()`, `validate_hvym_file()` methods
+  - Automatic `.hvym` extension handling
+  - File validation without loading full token
+  - Backward compatible with legacy token files
+  - Enhanced crypto security tests for file format integrity
 - **0.20.0**: HVYMDataToken now uses Biscuit tokens
   - Unlimited file size support (no more 16KB macaroon limit)
   - New `StellarSharedAccountTokenBuilder` for shared keypair exchange
