@@ -9,6 +9,7 @@ A Python library for secure token generation and verification using Stellar keyp
 - **Encryption**: Hybrid (signature-based) and asymmetric (X25519) modes
 - **File Storage**: Biscuit-based tokens for files of any size (no 16KB limit)
 - **HVYM File Format**: Structured `.hvym` files with binary header + JSON metadata
+- **JWT Authentication**: Ed25519-signed JWTs for tunnel/service authentication
 - **Flexible Expiration**: Tokens can expire after a set time or never expire
 - **Stellar Compatible**: Built on Ed25519/X25519 keys from Stellar SDK
 
@@ -30,7 +31,8 @@ pip install biscuit-auth
 from hvym_stellar import (
     Stellar25519KeyPair, StellarSharedKey, StellarSharedDecryption,
     StellarSharedKeyTokenBuilder, StellarSharedKeyTokenVerifier,
-    HVYMDataToken, TokenType
+    HVYMDataToken, TokenType,
+    StellarJWTToken, StellarJWTTokenVerifier, StellarJWTSession
 )
 from stellar_sdk import Keypair
 
@@ -306,7 +308,7 @@ file_bytes, metadata = HVYMDataToken.from_hvym_file(hvym_path, receiver_kp)
 
 This enables both sender and receiver to verify the token while supporting unlimited file sizes.
 
-### 6. Token Expiration
+### Token Expiration
 
 All token types support optional expiration. By default, convenience methods use a 1-hour expiration, but you can create **non-expiring tokens** by setting `expires_in=None`.
 
@@ -349,6 +351,99 @@ token = HVYMDataToken(
 ```
 
 **Note:** The convenience methods `create_from_file()` and `create_from_bytes()` default to `expires_in=3600` (1 hour). To create non-expiring tokens with these methods, explicitly pass `expires_in=None`.
+
+### 7. JWT Authentication (New in v0.22.0)
+
+JWT tokens signed with Stellar Ed25519 keys for tunnel and service authentication. Unlike Macaroon-based tokens, JWT tokens do not require a pre-shared secret - verification uses the public key from the `sub` claim.
+
+```python
+from hvym_stellar import (
+    Stellar25519KeyPair, StellarJWTToken, StellarJWTTokenVerifier,
+    StellarJWTSession
+)
+from stellar_sdk import Keypair
+
+# Create keypairs
+client_kp = Stellar25519KeyPair(Keypair.random())
+server_kp = Stellar25519KeyPair(Keypair.random())
+server_address = server_kp.base_stellar_keypair().public_key
+
+# === CLIENT SIDE: Create JWT ===
+token = StellarJWTToken(
+    keypair=client_kp,
+    audience=server_address,
+    services=["pintheon", "ipfs"],
+    expires_in=3600,
+    claims={"custom_claim": "custom_value"}  # Optional custom claims
+)
+jwt_string = token.to_jwt()
+
+# Inspect token structure
+print(token.inspect())
+
+# === SERVER SIDE: Verify JWT ===
+verifier = StellarJWTTokenVerifier(jwt_string)
+
+# Basic validation
+if verifier.valid():
+    print("Token is valid")
+
+# Validation with audience and issuer checks
+if verifier.valid(expected_audience=server_address, expected_issuer="hvym_tunnler"):
+    client_address = verifier.get_stellar_address()
+    services = verifier.get_services()
+    claims = verifier.get_claims()
+    print(f"Client: {client_address}")
+    print(f"Services: {services}")
+
+# Check expiration
+if verifier.is_expired():
+    print("Token has expired")
+
+# verify() returns claims or raises ValueError
+try:
+    claims = verifier.verify(expected_audience=server_address)
+except ValueError as e:
+    print(f"Verification failed: {e}")
+```
+
+#### JWT Session Key Derivation
+
+After verifying a JWT, establish an encrypted session between client and server:
+
+```python
+# === SERVER SIDE: After JWT verification ===
+session = StellarJWTSession(
+    server_keypair=server_kp,
+    client_stellar_address=client_address  # From verifier.get_stellar_address()
+)
+
+# Derive tunnel-specific key (uses JWT_SIGNING domain separation)
+tunnel_key = session.derive_tunnel_key()  # 32 bytes
+
+# Or derive key with custom domain
+custom_key = session.derive_shared_key(domain=b"my_custom_domain")
+
+# === CLIENT SIDE: Same derivation ===
+client_session = StellarJWTSession(
+    server_keypair=client_kp,
+    client_stellar_address=server_address
+)
+client_tunnel_key = client_session.derive_tunnel_key()
+
+# Both keys match!
+assert tunnel_key == client_tunnel_key
+```
+
+#### JWT vs Macaroon Tokens
+
+| Feature | JWT Tokens | Macaroon Tokens |
+|---------|------------|-----------------|
+| Signing | Ed25519 (EdDSA) | HMAC-SHA256 |
+| Verification | Public key only | Requires shared secret |
+| Use Case | Service authentication | Access control with caveats |
+| Attenuation | No | Yes (add caveats) |
+| Standards | RFC 7519 | Custom |
 
 ## API Reference
 
@@ -428,6 +523,65 @@ token.add_file_hash_caveat("sha256_hash")
 info = token.get_file_info()  # Returns dict with size, hash, filename, etc.
 ```
 
+### StellarJWTToken
+
+```python
+# Create JWT token
+token = StellarJWTToken(
+    keypair,                    # Stellar25519KeyPair - signing key
+    audience,                   # Stellar address of intended recipient
+    services=None,              # Optional list of services (e.g., ["pintheon", "ipfs"])
+    expires_in=3600,            # Seconds until expiration (None for no expiration)
+    issuer="hvym_tunnler",      # JWT issuer (default: "hvym_tunnler")
+    claims=None                 # Optional dict of custom claims
+)
+
+jwt_string = token.to_jwt()     # Generate signed JWT string
+claims = token.get_claims()     # Get payload claims as dict
+print(token.inspect())          # Human-readable token structure
+```
+
+### StellarJWTTokenVerifier
+
+```python
+# Verify JWT token
+verifier = StellarJWTTokenVerifier(
+    jwt_string,                 # JWT string to verify
+    max_age_seconds=None        # Optional max age constraint
+)
+
+# Validation methods
+verifier.valid()                                    # Basic validation
+verifier.valid(expected_audience=addr)              # With audience check
+verifier.valid(expected_issuer="hvym_tunnler")      # With issuer check
+verifier.valid(expected_audience=addr, expected_issuer="hvym_tunnler")  # Both
+
+# Returns claims or raises ValueError
+claims = verifier.verify(expected_audience=addr)
+
+# Getters
+verifier.get_stellar_address()  # Subject (signer's Stellar address)
+verifier.get_claims()           # All payload claims
+verifier.get_services()         # Services list from claims
+verifier.is_expired()           # Check expiration status
+print(verifier.inspect())       # Human-readable verification result
+```
+
+### StellarJWTSession
+
+```python
+# Establish encrypted session after JWT verification
+session = StellarJWTSession(
+    server_keypair,             # Your Stellar25519KeyPair
+    client_stellar_address      # Remote party's Stellar address
+)
+
+# Key derivation
+key = session.derive_shared_key()              # Basic 32-byte shared key
+key = session.derive_shared_key(domain=b"x")   # With custom domain separation
+tunnel_key = session.derive_tunnel_key()       # Uses JWT_SIGNING domain
+```
+
 ### StellarSharedAccountTokenBuilder (Advanced)
 
 For direct access to the shared keypair mechanism:
@@ -466,13 +620,15 @@ shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
 
 ## Token Comparison
 
-| Feature | Access Tokens | Secret Tokens | Data Tokens (HVYMDataToken) |
-|---------|---------------|---------------|----------------------------|
-| Backend | Macaroon | Macaroon | Biscuit + Macaroon |
-| Max Size | ~16KB | ~16KB | **Unlimited** |
-| Signing | HMAC-SHA256 | HMAC-SHA256 | Ed25519 |
-| File Storage | No | Limited | **Yes** |
-| Expiration | Optional | Optional | Optional (default: 1hr) |
+| Feature | Access Tokens | Secret Tokens | Data Tokens | JWT Tokens |
+|---------|---------------|---------------|-------------|------------|
+| Backend | Macaroon | Macaroon | Biscuit + Macaroon | Standard JWT |
+| Max Size | ~16KB | ~16KB | **Unlimited** | ~8KB |
+| Signing | HMAC-SHA256 | HMAC-SHA256 | Ed25519 | Ed25519 (EdDSA) |
+| Verification | Shared secret | Shared secret | Shared secret | **Public key only** |
+| File Storage | No | Limited | **Yes** | No |
+| Expiration | Optional | Optional | Optional (default: 1hr) | Optional |
+| Use Case | Access control | Secret sharing | File transmission | Service auth |
 
 ## Security
 
@@ -483,6 +639,13 @@ shared_kp = StellarSharedAccountTokenBuilder.extract_shared_keypair(
 
 ## Version History
 
+- **0.22.0**: JWT Authentication Support
+  - New `StellarJWTToken` for creating Ed25519-signed JWT tokens
+  - New `StellarJWTTokenVerifier` for verifying JWT tokens using public key
+  - New `StellarJWTSession` for deriving shared keys after JWT authentication
+  - Added `TokenType.TUNNEL` for JWT tunnel authentication
+  - Added `DomainSeparation.JWT_SIGNING` for domain-separated key derivation
+  - No shared secret required for verification (uses public key from `sub` claim)
 - **0.21.0**: HVYM File Format Support
   - New `.hvym` file format with structured binary header + JSON metadata
   - Added `to_hvym_file()`, `from_hvym_file()`, `extract_to_file()`, `validate_hvym_file()` methods
