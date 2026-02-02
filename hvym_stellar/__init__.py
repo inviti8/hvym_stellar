@@ -1,6 +1,6 @@
 """Heavymeta Stellar Utilities for Python , By: Fibo Metavinci"""
 
-__version__ = "0.22.0"
+__version__ = "0.23.0"
 
 import nacl
 from nacl import utils, secret
@@ -2732,12 +2732,26 @@ class StellarJWTTokenVerifier:
         )
 
 
-class StellarJWTSession:
+class StellarJWTSession(StellarKeyBase):
     """
     Establishes an encrypted session after JWT authentication.
 
+    Inherits from StellarKeyBase to reuse ECDH shared secret derivation,
+    providing a unified API across the hvym_stellar library.
+
     After verifying a JWT, the server can derive a shared key with
     the client for encrypting the tunnel traffic.
+
+    Example:
+        # Server side (after JWT verification)
+        session = StellarJWTSession(server_keypair, client_address)
+        box = session.create_secret_box()
+        encrypted = box.encrypt_json({"response": "data"})
+
+        # Client side (mirror session)
+        session = StellarJWTSession(client_keypair, server_address)
+        box = session.create_secret_box()
+        decrypted = box.decrypt_json(encrypted)
     """
 
     def __init__(
@@ -2749,8 +2763,8 @@ class StellarJWTSession:
         Initialize session with server keypair and client address.
 
         Args:
-            server_keypair: Server's Stellar25519KeyPair
-            client_stellar_address: Client's Stellar address (from JWT sub)
+            server_keypair: Server's Stellar25519KeyPair (local party)
+            client_stellar_address: Client's Stellar address (remote party, from JWT sub)
         """
         self._server_keypair = server_keypair
         self._client_address = client_stellar_address
@@ -2759,33 +2773,196 @@ class StellarJWTSession:
         client_pubkey_bytes = _stellar_address_to_ed25519_pubkey(client_stellar_address)
         # Convert Ed25519 to X25519 for ECDH
         verify_key = VerifyKey(client_pubkey_bytes)
-        self._client_x25519_pub = verify_key.to_curve25519_public_key()
+        client_x25519_pub = verify_key.to_curve25519_public_key()
+
+        # Initialize parent with X25519 keys for ECDH
+        super().__init__(
+            private_key=server_keypair.private_key(),
+            public_key_raw=bytes(client_x25519_pub)
+        )
+
+    @property
+    def client_address(self) -> str:
+        """Get the client's Stellar address."""
+        return self._client_address
+
+    @property
+    def server_address(self) -> str:
+        """Get the server's Stellar address."""
+        return self._server_keypair.base_stellar_keypair().public_key
 
     def derive_shared_key(self, domain: bytes = None) -> bytes:
         """
-        Derive shared key for session encryption.
+        Derive shared key for session encryption with domain separation.
+
+        Uses the parent's shared_secret() for the raw ECDH secret,
+        then applies domain separation if specified.
 
         Args:
-            domain: Optional domain separation bytes
+            domain: Optional domain separation bytes (e.g., DomainSeparation.JWT_SIGNING)
 
         Returns:
             32-byte shared key
         """
-        # Compute ECDH shared secret
-        box = Box(
-            self._server_keypair.private_key(),
-            self._client_x25519_pub
-        )
-        shared_secret = box.shared_key()
+        # Get raw ECDH shared secret from parent
+        raw_secret = self.shared_secret()
 
         # Apply domain separation if provided
         if domain:
             hasher = hashlib.sha256()
-            hasher.update(domain + shared_secret)
+            hasher.update(domain + raw_secret)
             return hasher.digest()
 
-        return shared_secret
+        return raw_secret
 
     def derive_tunnel_key(self) -> bytes:
-        """Derive key specifically for tunnel encryption."""
+        """
+        Derive key specifically for tunnel encryption.
+
+        Uses JWT_SIGNING domain separation to ensure this key
+        is cryptographically independent from other derived keys.
+
+        Returns:
+            32-byte key for tunnel traffic encryption
+        """
         return self.derive_shared_key(DomainSeparation.JWT_SIGNING)
+
+    def create_secret_box(self) -> 'StellarSecretBox':
+        """
+        Create a SecretBox for encrypting tunnel traffic.
+
+        Convenience method that derives the tunnel key and
+        initializes a StellarSecretBox with it.
+
+        Returns:
+            StellarSecretBox initialized with the tunnel key
+        """
+        return StellarSecretBox(self.derive_tunnel_key())
+
+    def __repr__(self) -> str:
+        return (
+            f"StellarJWTSession("
+            f"server={self.server_address[:8]}..., "
+            f"client={self._client_address[:8]}...)"
+        )
+
+
+class StellarSecretBox:
+    """
+    Authenticated encryption using ECDH-derived shared key.
+
+    Uses NaCl SecretBox (XSalsa20-Poly1305) for symmetric encryption
+    with a key derived from Stellar ECDH key exchange.
+
+    Security properties:
+        - Confidentiality: XSalsa20 stream cipher
+        - Integrity: Poly1305 MAC (16 bytes)
+        - Unique nonces: 24-byte random nonce per message
+
+    Example:
+        # Server side
+        session = StellarJWTSession(server_kp, client_address)
+        box = session.create_secret_box()
+        encrypted = box.encrypt_json({"secret": "data"})
+
+        # Client side (derives same key)
+        session = StellarJWTSession(client_kp, server_address)
+        box = session.create_secret_box()
+        decrypted = box.decrypt_json(encrypted)
+    """
+
+    # Re-export constants for convenience
+    NONCE_SIZE = 24  # XSalsa20 nonce
+    KEY_SIZE = 32    # 256-bit key
+    MAC_SIZE = 16    # Poly1305 tag
+
+    def __init__(self, shared_key: bytes):
+        """
+        Initialize with ECDH-derived shared key.
+
+        Args:
+            shared_key: 32-byte key from StellarJWTSession.derive_tunnel_key()
+
+        Raises:
+            ValueError: If key is not 32 bytes
+        """
+        if len(shared_key) != self.KEY_SIZE:
+            raise ValueError(
+                f"Invalid key size: expected {self.KEY_SIZE}, got {len(shared_key)}"
+            )
+        self._box = secret.SecretBox(shared_key)
+        self._key_id = base64.b64encode(shared_key[:4]).decode()
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        """
+        Encrypt raw bytes with random nonce.
+
+        Args:
+            plaintext: Data to encrypt
+
+        Returns:
+            nonce (24 bytes) || ciphertext || tag (16 bytes)
+        """
+        nonce = utils.random(self.NONCE_SIZE)
+        encrypted = self._box.encrypt(plaintext, nonce)
+        # encrypted contains nonce || ciphertext, return as-is
+        return bytes(encrypted)
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        """
+        Decrypt data encrypted with encrypt().
+
+        Args:
+            ciphertext: Output from encrypt() (nonce || ciphertext || tag)
+
+        Returns:
+            Decrypted plaintext
+
+        Raises:
+            nacl.exceptions.CryptoError: If decryption fails (tampered or wrong key)
+        """
+        return self._box.decrypt(ciphertext)
+
+    def encrypt_json(self, data: dict) -> str:
+        """
+        Encrypt JSON-serializable data to base64 string.
+
+        Args:
+            data: Dictionary to encrypt
+
+        Returns:
+            Base64-encoded encrypted message
+        """
+        plaintext = json.dumps(data, separators=(',', ':')).encode('utf-8')
+        ciphertext = self.encrypt(plaintext)
+        return base64.b64encode(ciphertext).decode('utf-8')
+
+    def decrypt_json(self, encrypted_b64: str) -> dict:
+        """
+        Decrypt base64-encoded message to JSON.
+
+        Args:
+            encrypted_b64: Base64-encoded encrypted message
+
+        Returns:
+            Decrypted dictionary
+
+        Raises:
+            nacl.exceptions.CryptoError: If decryption fails
+            json.JSONDecodeError: If decrypted data is not valid JSON
+        """
+        ciphertext = base64.b64decode(encrypted_b64.encode('utf-8'))
+        plaintext = self.decrypt(ciphertext)
+        return json.loads(plaintext.decode('utf-8'))
+
+    @property
+    def key_id(self) -> str:
+        """
+        Get key identifier for logging (first 4 bytes, base64).
+
+        Safe to log - does not reveal the key.
+        """
+        return self._key_id
+
+    def __repr__(self) -> str:
+        return f"StellarSecretBox(key_id={self._key_id}...)"
