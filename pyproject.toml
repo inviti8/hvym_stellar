@@ -6,7 +6,7 @@ build-backend = "flit_core.buildapi"
 name = "hvym_stellar"
 authors = [{name = "Fibo Metavinci", email = "pszdw-75nat-5227i-bha5s-y7lai-pebdq-o2agp-3xho4-hd6z6-emxrd-nqe@dmail.ai"}]
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 license-files = ["LICENSE"]
 dynamic = ["version", "description"]
 dependencies = [
